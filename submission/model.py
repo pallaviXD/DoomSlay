@@ -187,9 +187,11 @@ def load_compatible(net: "SlayNet", sd: dict) -> list[str]:
 
 # ----------------------------------------------------------------------------- policy
 class SlayNet(nn.Module):
-    def __init__(self, hidden: int = 256):
+    def __init__(self, hidden: int = 256, use_masks: bool = False):
         super().__init__()
         self.hidden = hidden
+        # Action masks are part of how a policy was trained: stored with the weights (checkpoint "masks").
+        self.use_masks = use_masks
         self.rays = RayEncoder(256)
         self.ents = EntityEncoder()
         self.vit = nn.Sequential(nn.Linear(VITALS_FEAT + PREV_ACT_DIM, 64), nn.ReLU())
@@ -219,7 +221,10 @@ class SlayNet(nn.Module):
     def step(self, o, prev_act, h):
         """Single decision step. Returns (logits (N,15), value (N,), new h)."""
         h = self.gru(self.encode(o, prev_act), h)
-        return apply_action_mask(self.actor(h), o, prev_act), self.critic(h).squeeze(-1), h
+        logits = self.actor(h)
+        if self.use_masks:
+            logits = apply_action_mask(logits, o, prev_act)
+        return logits, self.critic(h).squeeze(-1), h
 
     def forward_sequence(self, o, prev_act, h0, starts):
         """Training: o tensors shaped (T,B,...), starts (T,B) = 1 where a new episode begins at t.
@@ -234,8 +239,10 @@ class SlayNet(nn.Module):
             h = self.gru(x[t], h)
             hs.append(h)
         hs = torch.stack(hs)  # (T,B,H)
-        logits = apply_action_mask(self.actor(hs).reshape(T * B, -1), flat, prev_act.reshape(T * B, -1))
-        return logits.reshape(T, B, -1), self.critic(hs).squeeze(-1)
+        logits = self.actor(hs)
+        if self.use_masks:
+            logits = apply_action_mask(logits.reshape(T * B, -1), flat, prev_act.reshape(T * B, -1)).reshape(T, B, -1)
+        return logits, self.critic(hs).squeeze(-1)
 
 
 # ----------------------------------------------------------------------------- distributions

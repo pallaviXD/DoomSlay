@@ -43,6 +43,7 @@ def parse():
     ap.add_argument("--thresholds", default="0.6,0.5,0.4", help="exit rate to advance from stage 1,2,3")
     ap.add_argument("--pool-size", type=int, default=48)
     ap.add_argument("--combat-frac", type=float, default=0.0, help="share of pool that is combat arenas")
+    ap.add_argument("--masks", action="store_true", help="train with action masks (saved in checkpoints)")
     ap.add_argument("--real-frac", type=float, default=0.0, help="share of pool that is real Freedoom levels")
     ap.add_argument("--variety-frac", type=float, default=0.0, help="prob. of exit switch / stairs per generated map")
     ap.add_argument("--regen-episodes", type=int, default=1500)
@@ -64,7 +65,7 @@ def parse():
 def save(path: Path, net, ppo, extra: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    torch.save({"model": net.state_dict(), "opt": ppo.opt.state_dict(), **extra}, tmp)
+    torch.save({"model": net.state_dict(), "opt": ppo.opt.state_dict(), "masks": bool(net.use_masks), **extra}, tmp)
     tmp.replace(path)
 
 
@@ -81,7 +82,7 @@ def main():
     tb = SummaryWriter(str(ROOT / "runs" / a.run))
 
     cfg = PPOConfig(lr=a.lr, lr_final=a.lr_final, ent_coef=a.ent_coef)
-    net = SlayNet().to(dev)
+    net = SlayNet(use_masks=a.masks).to(dev)
     ppo = PPO(net, cfg, dev)
     cur = Curriculum(ROOT / "training" / "generated_maps" / a.run, start_stage=a.stage, max_stage=a.max_stage,
                      pool_size=a.pool_size, regen_episodes=a.regen_episodes, mixed=a.mixed, seed=a.seed,
@@ -124,7 +125,7 @@ def main():
     # 24-env batch, because of per-kernel launch overhead on Windows). PPO updates run on the GPU.
     torch.set_num_threads(2)
     cpu = torch.device("cpu")
-    actor = SlayNet()
+    actor = SlayNet(use_masks=a.masks)
     actor.load_state_dict(net.state_dict())
     actor.eval()
     # Two pipelined halves: while half A runs in the engines, the policy computes actions for half B.

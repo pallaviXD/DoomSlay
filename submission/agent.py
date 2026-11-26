@@ -62,6 +62,8 @@ class DoomAgent:
     def load_weights(self, ckpt) -> None:
         """Accepts a checkpoint dict or a raw state dict; older nets without spatial memory warm-start."""
         M.load_compatible(self.net, ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt)
+        # Policies trained with action masks must also run with them (flag saved by trainer/export).
+        self.net.use_masks = bool(ckpt.get("masks", False)) if isinstance(ckpt, dict) and "model" in ckpt else False
 
     def reset(self) -> None:
         """Before every map: clear GRU memory, the spatial-memory map and the previous-action input."""
