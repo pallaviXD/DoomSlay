@@ -86,7 +86,8 @@ def _run_map(args) -> list[dict]:
 def evaluate(ckpt: str | None, maps: list[dict], seeds=(11, 22), processes: int | None = None) -> dict:
     jobs = [(ckpt, m, list(seeds)) for m in maps]
     ctx = mp.get_context("spawn")
-    with ctx.Pool(processes or min(len(jobs), 8)) as pool:
+    # Few processes: each eval process loads torch (~2-3 GB commit on Windows with CUDA DLLs).
+    with ctx.Pool(processes or min(len(jobs), 2)) as pool:
         eps = [e for res in pool.map(_run_map, jobs) for e in res]
     return summarize(eps)
 

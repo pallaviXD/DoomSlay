@@ -18,7 +18,11 @@ import time
 import traceback
 from pathlib import Path
 
-import numpy as np
+# Before numpy loads: one BLAS thread per worker (OpenBLAS buffers per core x 24 processes exhaust RAM).
+for _k in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_k, "1")
+
+import numpy as np  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "submission"))
