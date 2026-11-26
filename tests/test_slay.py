@@ -358,3 +358,18 @@ def test_action_masks():
     assert acts[3, 3] == 0 and acts[3, 4] == 0  # masked options never sampled
     lp, ent = log_prob_entropy(m, acts)
     assert torch.isfinite(lp).all() and torch.isfinite(ent).all()
+
+
+def test_weapon_mask():
+    from submission.model import NEXT_IDX, apply_action_mask
+    o = fake_obs(3)
+    o["vitals"][:] = 0
+    o["vitals"][0, 2] = 2  # holding the pistol
+    o["vitals"][0, 4] = 50
+    o["vitals"][1, 2] = 1  # holding the fist, has bullets
+    o["vitals"][1, 4] = 20
+    o["vitals"][2, 2] = 1  # fist, no ammo at all
+    m = apply_action_mask(torch.zeros(3, NUM_LOGITS), o, torch.zeros(3, PREV_ACT_DIM), level=1)
+    assert m[0, NEXT_IDX] < -1e8  # never cycle away from a gun
+    assert m[1, NEXT_IDX] == 0  # may switch back from the fist to a gun
+    assert m[2, NEXT_IDX] < -1e8  # nothing to switch to

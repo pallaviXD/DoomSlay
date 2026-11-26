@@ -53,21 +53,32 @@ PREV_ACT_DIM = NUM_LOGITS  # one-hot of the previous factored action
 _HEAD_OFFSETS = [sum(HEAD_SIZES[:i]) for i in range(len(HEAD_SIZES))]
 FIRE_IDX = _HEAD_OFFSETS[3] + 1  # logit of "ATTACK pressed"
 USE_IDX = _HEAD_OFFSETS[4] + 1  # logit of "USE pressed"
+NEXT_IDX = _HEAD_OFFSETS[5] + 1  # logit of "SELECT_NEXT_WEAPON pressed"
+# Mask levels (stored per checkpoint): 0 none; 1 weapon only; 2 weapon + fire + use.
+# Weapon mask (found in replays: policies pressed NEXT_WEAPON on ~50-60% of steps and held the FIST ~45% of
+# the time, "punching air"): NEXT_WEAPON only while holding the fist/chainsaw (slot <= 1) with ammo left, so
+# the agent can get back to a gun; DOOM still auto-switches on weapon pickups and when ammo runs out.
 ENEMY_TYPE_IDS = (1, 2, 3)  # doom_env.spaces.ENTITY_TYPES: enemy_melee, enemy_hitscan, enemy_projectile
 USE_REACH = 80.0 / 1024.0  # ray distance units (64 use range + margin)
 _FRONT_RAYS = [-2, -1, 0, 1, 2]  # rays within about +-11 degrees of straight ahead
 
 
-def apply_action_mask(logits: torch.Tensor, o: dict[str, torch.Tensor], prev_act: torch.Tensor) -> torch.Tensor:
+def apply_action_mask(logits: torch.Tensor, o: dict[str, torch.Tensor], prev_act: torch.Tensor,
+                      level: int = 2) -> torch.Tensor:
     """logits (N,15); o tensors with leading N; prev_act (N,15) one-hot of the previous action."""
+    neg = torch.full_like(logits[:, 0], -1e9)
+    v = o["vitals"]
+    next_ok = (v[:, 2] <= 1) & (v[:, 4:8].sum(-1) > 0)
+    logits = logits.clone()
+    logits[:, NEXT_IDX] = torch.where(next_ok, logits[:, NEXT_IDX], neg)
+    if level < 2:
+        return logits
     et = o["ent_type"].long()
     enemy = ((o["ent_mask"] > 0.5) & (et >= ENEMY_TYPE_IDS[0]) & (et <= ENEMY_TYPE_IDS[-1])).any(-1)
     fire_ok = enemy & (prev_act[:, FIRE_IDX] < 0.5)
     front_d = o["ray_dist"][:, _FRONT_RAYS]
     front_t = o["ray_type"][:, _FRONT_RAYS]
     use_ok = ((front_d < USE_REACH) & (front_t > 0)).any(-1)
-    neg = torch.full_like(logits[:, 0], -1e9)
-    logits = logits.clone()
     logits[:, FIRE_IDX] = torch.where(fire_ok, logits[:, FIRE_IDX], neg)
     logits[:, USE_IDX] = torch.where(use_ok, logits[:, USE_IDX], neg)
     return logits
@@ -187,11 +198,11 @@ def load_compatible(net: "SlayNet", sd: dict) -> list[str]:
 
 # ----------------------------------------------------------------------------- policy
 class SlayNet(nn.Module):
-    def __init__(self, hidden: int = 256, use_masks: bool = False):
+    def __init__(self, hidden: int = 256, use_masks: int = 0):
         super().__init__()
         self.hidden = hidden
         # Action masks are part of how a policy was trained: stored with the weights (checkpoint "masks").
-        self.use_masks = use_masks
+        self.use_masks = int(use_masks)  # mask level 0/1/2 (see apply_action_mask)
         self.rays = RayEncoder(256)
         self.ents = EntityEncoder()
         self.vit = nn.Sequential(nn.Linear(VITALS_FEAT + PREV_ACT_DIM, 64), nn.ReLU())
@@ -223,7 +234,7 @@ class SlayNet(nn.Module):
         h = self.gru(self.encode(o, prev_act), h)
         logits = self.actor(h)
         if self.use_masks:
-            logits = apply_action_mask(logits, o, prev_act)
+            logits = apply_action_mask(logits, o, prev_act, self.use_masks)
         return logits, self.critic(h).squeeze(-1), h
 
     def forward_sequence(self, o, prev_act, h0, starts):
@@ -241,7 +252,8 @@ class SlayNet(nn.Module):
         hs = torch.stack(hs)  # (T,B,H)
         logits = self.actor(hs)
         if self.use_masks:
-            logits = apply_action_mask(logits.reshape(T * B, -1), flat, prev_act.reshape(T * B, -1)).reshape(T, B, -1)
+            logits = apply_action_mask(logits.reshape(T * B, -1), flat, prev_act.reshape(T * B, -1),
+                                       self.use_masks).reshape(T, B, -1)
         return logits, self.critic(hs).squeeze(-1)
 
 

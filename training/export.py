@@ -19,6 +19,7 @@ def main(src: str) -> None:
     ck = torch.load(src, map_location="cpu", weights_only=False)
     meta = {k: ck[k] for k in ("update", "steps", "best_score", "curriculum") if k in ck}
     payload = {"model": ck["model"], "sample": True, "masks": bool(ck.get("masks", False)),
+               "mask_level": int(ck.get("mask_level", 2 if ck.get("masks", False) else 0)),
                "meta": json.dumps({"source": str(src), **meta}, default=str)}
     tmp = OUT.with_suffix(".tmp")
     torch.save(payload, tmp)

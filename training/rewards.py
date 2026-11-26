@@ -17,10 +17,10 @@ REWARD_WEIGHTS = {
     "door_open": 2.0,  # a door sector opened for the first time (doubles as "unlock" for locked doors)
     # Raised 1 -> 4 at 3.9M steps: agents picked up keys but rarely went back to the locked door.
     "locked_door_bonus": 4.0,  # extra on top of door_open when the opened door was locked
-    "kill": 1.0,
+    "kill": 2.0,  # 1 -> 2 at 25M steps: user review, agent ignored monsters and only ran for the exit
     # Added at 3.9M steps: dense aiming signal (kills alone are sparse). Mirrors damage_per_hp and is
     # bounded by each enemy's health. Engine DAMAGECOUNT, training only.
-    "damage_dealt_per_hp": 0.01,
+    "damage_dealt_per_hp": 0.02,  # 0.01 -> 0.02 at 25M steps (same reason)
     # Added at 5.0M steps: measured that the policy fired on ~40-50% of steps whether or not a monster
     # was visible (shooting was free). A small cost per ammo unit spent makes misses cost and hits
     # (damage_dealt) pay, so it should learn to fire only at monsters. One pistol bullet = -0.01.
