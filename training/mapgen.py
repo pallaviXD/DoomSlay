@@ -24,6 +24,11 @@ Design (all choices aim at "always valid, always solvable" rather than at pretty
 * Stage 3: the locked door sits on a *bridge* of the room graph on the start -> exit path (so the
   exit cannot be reached around it), and the matching keycard is in a room that is reachable from the
   start without crossing that door, preferably a side branch off the main path.
+* Training-only options toward hand-made levels (off by default, so default maps are unchanged):
+  `switch_exit` (exit = use-activated SW1* wall switch, special 243 + playeruse, instead of the pad) and
+  `stairs` (room floors 0..80 units, corridors become 16-unit staircases, doors stay on flat ground).
+  Both are post-passes on a finished layout that draw from a separate rng (see `_apply_switch_exit`,
+  `_apply_stairs`), so the same seed gives the same rooms, doors, key and monsters with or without them.
 
 Seeds: training seeds are ints in [0, TRAIN_SEED_LIMIT). Seeds in
 [HELDOUT_SEED_BASE, HELDOUT_SEED_BASE + HELDOUT_SEED_SPAN) are reserved for the held-out
@@ -40,7 +45,7 @@ import argparse
 import json
 import random
 from collections import Counter, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable
 
@@ -76,6 +81,15 @@ FLOOR_TEX = ("FLOOR0_1", "FLOOR4_8", "FLOOR5_1", "FLOOR7_1", "FLAT1", "FLAT14", 
 CEIL_TEX = ("CEIL1_1", "CEIL3_5", "CEIL5_1", "CEIL3_3", "FLAT20", "TLITE6_4")
 DOOR_TEX = ("BIGDOOR2", "BIGDOOR1", "BIGDOOR4")
 EXIT_FLOOR = "GATE3"
+# Exit-switch textures (SW1* = "off" state; the engine swaps to SW2* when pressed). Verified present in
+# freedoom2.wad TEXTURE1/2. A mix of the obvious EXIT one and generic wall switches, as in real levels.
+SWITCH_TEX = ("SW1EXIT", "SW1COMP", "SW1STRTN", "SW1BRN1", "SW1GRAY", "SW1METAL", "SW1STON1")
+
+# Training-only options (switch_exit / stairs) draw from their own rng so the default maps (and the
+# held-out WADs) keep their exact rng stream and bytes.
+EXTRA_RNG_SALT = 0x5EED_D00D
+STEP = 16  # floor change per stair step (Doom lets the player climb <= 24)
+MAX_LEVEL = 5  # room floors are STEP * level, level in [0, MAX_LEVEL] -> 0..80 units
 
 
 # ---------------------------------------------------------------------------------- data model
@@ -128,6 +142,9 @@ class Conn:
     door_cells: list = field(default_factory=list)
     chain: list = field(default_factory=list)  # sector ids from room a to room b (adjacency whitelist)
     door_sector: int = -1
+    cols: list = field(default_factory=list)  # corridor cross-sections (lists of cells) from room a to b
+    col_sectors: list = field(default_factory=list)  # sector id of each entry of `cols`
+    door_at: int | None = None  # index into `cols` of the door cross-section
 
 
 @dataclass
@@ -150,6 +167,11 @@ class Layout:
     key_cell: tuple[int, int] | None = None
     locked_conn: int | None = None
     offset: tuple[int, int] = (0, 0)  # map-unit translation of the whole grid
+    switch_exit: bool = False
+    stairs: bool = False
+    # switch exit: unit wall edges ("v", x, y) / ("h", y, x) that form the switch linedef, its texture
+    switch_edges: list = field(default_factory=list)
+    switch_tex: str = ""
 
     def to_units(self, c: tuple[float, float]) -> tuple[float, float]:
         return ((c[0] + 0.5) * CELL + self.offset[0], (c[1] + 0.5) * CELL + self.offset[1])
@@ -249,7 +271,8 @@ def _room_graph(rng: random.Random, stage: int) -> tuple[tuple[int, int], list[t
     return dims, slots, edges, n_tree
 
 
-def _try_build(rng: random.Random, seed: int, stage: int, enemies: bool, combat: bool = False) -> Layout:
+def _try_build(rng: random.Random, seed: int, stage: int, enemies: bool, combat: bool = False,
+               switch_exit: bool = False, stairs: bool = False, xrng: random.Random | None = None) -> Layout:
     dims, slots, edges, _ = _room_graph(rng, stage)
     n = len(slots)
     lo, hi = (6, 14)
@@ -349,10 +372,12 @@ def _try_build(rng: random.Random, seed: int, stage: int, enemies: bool, combat:
         door_at = rng.randrange(len(cols)) if c.kind != "open" else None
         parts = [cols[:door_at], cols[door_at + 1:]] if door_at is not None else [cols]
         chain = [A.sector]
+        c.cols, c.door_at = cols, door_at  # kept for the optional stairs pass (no rng involved)
         for pi, part in enumerate(parts):
             if part:
                 sid = new_sector("corridor", ceil, light)
                 chain.append(sid)
+                c.col_sectors += [sid] * len(part)
                 for cell in (cc for col in part for cc in col):
                     grid[cell] = sid
                     c.cells.append(cell)
@@ -362,6 +387,7 @@ def _try_build(rng: random.Random, seed: int, stage: int, enemies: bool, combat:
                 sid = new_sector("door", 0, light, lock=lock, door_tex=top, track_tex=track, ceil_tex="CEIL1_1", floor_tex="FLAT20")
                 c.door_sector = sid
                 chain.append(sid)
+                c.col_sectors.append(sid)
                 c.door_cells = list(cols[door_at])
                 for cell in c.door_cells:
                     grid[cell] = sid
@@ -473,8 +499,160 @@ def _try_build(rng: random.Random, seed: int, stage: int, enemies: bool, combat:
     lay = Layout(seed, stage, grid, sectors, rooms, conns, things, start_room, exit_room, start_cell, start_angle,
                  exit_cells, exit_sector, key_color, key_room, key_cell, locked_conn,
                  offset=(rng.randint(-8, 8) * CELL, rng.randint(-8, 8) * CELL))
+    # Optional training-only passes. They run after every draw from `rng` and use `xrng` only, so with
+    # both flags off the layout is exactly the historical one; with them on, rooms / doors / key /
+    # monsters stay where they were and only the exit kind and the floor heights change.
+    if switch_exit:
+        _apply_switch_exit(lay, xrng, entrances(exit_room) + ([start_cell] if exit_room == start_room else []))
+    if stairs:
+        _apply_stairs(lay, xrng)
     _validate(lay)
     return lay
+
+
+def _apply_switch_exit(lay: Layout, xrng: random.Random, refs: list[tuple[int, int]]) -> None:
+    """Replace the walk-over exit pad by a wall switch (Exit_Normal, use-activated) in the exit room.
+
+    Hand-made levels mostly end on a switch the player must face and press, not on a floor pad. The
+    switch is a 1-2 cell (64-128 unit) piece of the exit room's outer wall (the cell behind it is solid),
+    placed as far as possible from the room's entrances so finding it requires exploring the room. It
+    becomes its own one-sided linedef (see `to_udmf`), all other walls are untouched."""
+    E = lay.rooms[lay.exit_room]
+    g = lay.grid
+    # the pad was the last sector created: give its cells back to the room and drop it
+    assert lay.exit_sector == len(lay.sectors) - 1
+    for cell in lay.exit_cells:
+        g[cell] = E.sector
+    lay.sectors.pop()
+    lay.exit_sector = -1
+
+    def solid(c):
+        return not (0 <= c[0] < g.shape[0] and 0 <= c[1] < g.shape[1]) or g[c] < 0
+
+    # (front cell inside the room, outward direction, unit edge key) for every wall edge of the room
+    walls = {  # direction -> cells along that wall, in order
+        (-1, 0): [(E.x0, y) for y in range(E.y0, E.y1)], (1, 0): [(E.x1 - 1, y) for y in range(E.y0, E.y1)],
+        (0, -1): [(x, E.y0) for x in range(E.x0, E.x1)], (0, 1): [(x, E.y1 - 1) for x in range(E.x0, E.x1)],
+    }
+
+    def edge(c, d):
+        if d[0]:
+            return ("v", c[0] + (d[0] > 0), c[1])
+        return ("h", c[1] + (d[1] > 0), c[0])
+
+    options = []  # (front cells, edges)
+    for d, cells in walls.items():
+        ok = [solid((c[0] + d[0], c[1] + d[1])) for c in cells]
+        for i, c in enumerate(cells):
+            if ok[i]:
+                options.append(([c], [edge(c, d)]))
+                if i + 1 < len(cells) and ok[i + 1]:
+                    options.append(([c, cells[i + 1]], [edge(c, d), edge(cells[i + 1], d)]))
+    if not options:
+        raise _Retry("exit room has no plain wall for a switch")
+    score = [min(abs(f[0] - q[0]) + abs(f[1] - q[1]) for f in o[0] for q in refs) if refs else 0 for o in options]
+    best = max(score)
+    front, edges = xrng.choice([o for o, s in zip(options, score) if s >= 0.85 * best])
+    lay.exit_cells = front  # cells the player stands on to press the switch
+    lay.switch_edges = edges
+    lay.switch_tex = xrng.choice(SWITCH_TEX)
+    lay.switch_exit = True
+
+
+def _apply_stairs(lay: Layout, xrng: random.Random) -> None:
+    """Give rooms different floor heights and turn the corridors between them into staircases.
+
+    Real levels are not flat; the agent must learn that small steps are walkable (the ray sensors
+    already treat steps <= 24 as passable). Rules that keep every map walkable:
+    * room floor = STEP * level, level in [0, MAX_LEVEL];
+    * a corridor of L cross-sections between rooms a and b has L + 1 "transitions" (a -> col 0 -> ... ->
+      col L-1 -> b); each transition may carry one STEP (16 <= 24 units). A door cross-section must be
+      flat with both neighbours, which removes its two transitions. So |level a - level b| <= the
+      transitions left, which the level assignment below enforces on every edge (loops included);
+    * ceilings keep their height *above the local floor*, so headroom is unchanged (rooms >= 128,
+      corridors >= 96 units, player is 56 tall). Closed doors keep ceiling == floor.
+    Each run of equal-floor cross-sections becomes its own sector (the first run reuses the original
+    corridor sector), and the conn's adjacency chain is rebuilt so `_validate` still checks the map."""
+    secs, rooms, conns, g = lay.sectors, lay.rooms, lay.conns, lay.grid
+    n = len(rooms)
+
+    def slack(c: Conn) -> int:
+        return len(c.cols) + 1 - (2 if c.door_at is not None else 0)
+
+    adj: dict[int, list[tuple[int, Conn]]] = {i: [] for i in range(n)}
+    for c in conns:
+        adj[c.a].append((c.b, c))
+        adj[c.b].append((c.a, c))
+
+    # random BFS assignment; each new room's level respects all already-assigned neighbours
+    levels = None
+    for _ in range(50):
+        lv = {lay.start_room: xrng.randint(0, MAX_LEVEL)}
+        order, ok = deque([lay.start_room]), True
+        while order and ok:
+            u = order.popleft()
+            nbrs = list(adj[u])
+            xrng.shuffle(nbrs)
+            for v, _c in nbrs:
+                if v in lv:
+                    continue
+                lo, hi = 0, MAX_LEVEL
+                for w, c in adj[v]:
+                    if w in lv:
+                        lo, hi = max(lo, lv[w] - slack(c)), min(hi, lv[w] + slack(c))
+                if lo > hi:
+                    ok = False
+                    break
+                lv[v] = xrng.randint(lo, hi)
+                order.append(v)
+        if ok and (n == 1 or len(set(lv.values())) > 1):
+            levels = lv
+            break
+    if levels is None:  # practically never; flat is always valid
+        levels = {i: 0 for i in range(n)}
+
+    for i, r in enumerate(rooms):
+        s = secs[r.sector]
+        s.floor = STEP * levels[i]
+        s.ceil += s.floor
+    if lay.exit_sector >= 0:  # walk-over pad sits flush with its room
+        room = secs[rooms[lay.exit_room].sector]
+        secs[lay.exit_sector].floor, secs[lay.exit_sector].ceil = room.floor, room.ceil
+
+    for c in conns:
+        fa, fb = secs[rooms[c.a].sector].floor, secs[rooms[c.b].sector].floor
+        L = len(c.cols)
+        # transition t sits between cross-section t-1 and t (-1 = room a, L = room b)
+        avail = [t for t in range(L + 1) if c.door_at is None or t not in (c.door_at, c.door_at + 1)]
+        k = abs(fb - fa) // STEP
+        assert k <= len(avail), "level assignment violated a corridor's slack"
+        chosen = {avail[int((j + 0.5) * len(avail) / k)] for j in range(k)} if k else set()  # spread evenly
+        sign = 1 if fb > fa else -1
+        floors = [fa + sign * STEP * sum(t <= i for t in chosen) for i in range(L)]
+        rel_ceil = {sid: secs[sid].ceil for sid in set(c.col_sectors)}  # corridor headroom (floors were 0)
+        chain, prev_key = [rooms[c.a].sector], None
+        reused: set[int] = set()
+        for i, (col, sid) in enumerate(zip(c.cols, c.col_sectors)):
+            key = (sid, floors[i])
+            if key != prev_key:
+                if secs[sid].kind == "door":
+                    new = sid
+                    secs[sid].floor = secs[sid].ceil = floors[i]  # closed door: ceiling == floor
+                elif sid not in reused:
+                    new = sid
+                    reused.add(sid)
+                    secs[sid].floor, secs[sid].ceil = floors[i], floors[i] + rel_ceil[sid]
+                else:
+                    secs.append(replace(secs[sid], floor=floors[i], ceil=floors[i] + rel_ceil[sid]))
+                    new = len(secs) - 1
+                chain.append(new)
+                prev_key = key
+            for cell in col:
+                g[cell] = chain[-1]
+            c.col_sectors[i] = chain[-1]
+        chain.append(rooms[c.b].sector)
+        c.chain = chain
+    lay.stairs = True
 
 
 def _validate(lay: Layout) -> None:
@@ -498,17 +676,23 @@ def _validate(lay: Layout) -> None:
         raise _Retry("diagonal pinch")
 
 
-def build_layout(seed: int, stage: int, *, enemies: bool = True, allow_heldout: bool = False, combat: bool = False) -> Layout:
+def build_layout(seed: int, stage: int, *, enemies: bool = True, allow_heldout: bool = False, combat: bool = False,
+                 switch_exit: bool = False, stairs: bool = False) -> Layout:
     """Deterministic layout for (seed, stage). `enemies=False` is for scripted solvability tests.
-    `combat=True` (stage 1 only, training): same arena with 4-8 monsters, for aiming practice."""
+    `combat=True` (stage 1 only, training): same arena with 4-8 monsters, for aiming practice.
+    Training-only, closer to hand-made levels (all stages; stage 1 single-room maps get no stairs):
+    `switch_exit=True`: the exit is a use-activated wall switch instead of the walk-over pad.
+    `stairs=True`: rooms get floor heights 0..80 and corridors become <= 16-unit staircases.
+    Both default to False, and then the map is byte-identical to the historical generator."""
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {STAGES}")
     if is_heldout_seed(seed) and not allow_heldout:
         raise ValueError(f"seed {seed} is reserved for the held-out set (>= {HELDOUT_SEED_BASE})")
     rng = random.Random(int(seed) * 16 + stage)
+    xrng = random.Random((int(seed) * 16 + stage) ^ EXTRA_RNG_SALT)  # only drawn from when a flag is on
     for _ in range(200):
         try:
-            return _try_build(rng, int(seed), stage, enemies, combat)
+            return _try_build(rng, int(seed), stage, enemies, combat, switch_exit, stairs, xrng)
         except _Retry:
             continue
     raise RuntimeError(f"could not build a valid layout for seed={seed} stage={stage}")
@@ -555,17 +739,20 @@ def to_udmf(lay: Layout) -> tuple[str, dict]:
         return lo, hi, True
 
     # Collect unit edges keyed by everything that defines the resulting linedef, then merge runs.
+    # Exit-switch edges get an extra key element so they merge only with each other (their own
+    # linedef); without a switch every key is exactly as before (same order, same bytes).
+    sw = set(lay.switch_edges)
     runs: dict[tuple, list[int]] = {}
     for x in range(W + 1):  # vertical edges at x, spanning y..y+1; low side = west
         for y in range(H):
             lo, hi = at(x - 1, y), at(x, y)
             if lo != hi:
-                runs.setdefault(("v", x) + orient(lo, hi), []).append(y)
+                runs.setdefault(("v", x) + orient(lo, hi) + (("switch",) if ("v", x, y) in sw else ()), []).append(y)
     for y in range(H + 1):  # horizontal edges at y, spanning x..x+1; low side = south
         for x in range(W):
             lo, hi = at(x, y - 1), at(x, y)
             if lo != hi:
-                runs.setdefault(("h", y) + orient(lo, hi), []).append(x)
+                runs.setdefault(("h", y) + orient(lo, hi) + (("switch",) if ("h", y, x) in sw else ()), []).append(x)
 
     verts: dict[tuple[int, int], int] = {}
     vtext, stext, ltext = [], [], []
@@ -582,7 +769,7 @@ def to_udmf(lay: Layout) -> tuple[str, dict]:
         return len(stext) - 1
 
     for key in sorted(runs, key=str):
-        o, coord, front, back, front_low = key
+        o, coord, front, back, front_low, *tag = key
         pos = sorted(runs[key])
         start = prev = pos[0]
         segs = []
@@ -600,7 +787,10 @@ def to_udmf(lay: Layout) -> tuple[str, dict]:
                 p1, p2 = ((a, coord), (b, coord)) if front_low else ((b, coord), (a, coord))
             line = {"v1": vid(p1), "v2": vid(p2)}
             fs = secs[front]
-            if back < 0:
+            if back < 0 and tag:  # exit switch: one-sided wall, press USE on it to end the level
+                line["sidefront"] = side(front, mid=lay.switch_tex)
+                line.update(blocking=True, dontpegbottom=True, special=243, playeruse=True)
+            elif back < 0:
                 if fs.kind == "door":  # door jamb
                     line["sidefront"] = side(front, mid=fs.track_tex)
                 else:
@@ -675,14 +865,33 @@ def metadata(lay: Layout, wad_path: str, stats: dict | None = None) -> dict:
         "exit_graph_distance": dist.get(lay.exit_room, 0),
         "room_centers": room_centers,
         "room_edges": [[c.a, c.b] for c in lay.conns],
+        "switch_exit": lay.switch_exit,
+        "stairs": lay.stairs,
+        # exit switch linedef endpoints in map units [x1, y1, x2, y2] ("exit" above = where to stand)
+        "exit_switch": _switch_line_units(lay),
         **(stats or {}),
     }
 
 
+def _switch_line_units(lay: Layout) -> list[float] | None:
+    if not lay.switch_edges:
+        return None
+    ox, oy = lay.offset
+    pts = []
+    for o, coord, pos in lay.switch_edges:
+        if o == "v":
+            pts += [(coord, pos), (coord, pos + 1)]
+        else:
+            pts += [(pos, coord), (pos + 1, coord)]
+    (x1, y1), (x2, y2) = min(pts), max(pts)
+    return [float(x1 * CELL + ox), float(y1 * CELL + oy), float(x2 * CELL + ox), float(y2 * CELL + oy)]
+
+
 def generate(seed: int, stage: int, out_path: str | Path, *, enemies: bool = True, allow_heldout: bool = False,
-             combat: bool = False) -> dict:
+             combat: bool = False, switch_exit: bool = False, stairs: bool = False) -> dict:
     """Write a one-map PWAD (MAP01) for (seed, stage) to `out_path`; return JSON-able metadata."""
-    lay = build_layout(seed, stage, enemies=enemies, allow_heldout=allow_heldout, combat=combat)
+    lay = build_layout(seed, stage, enemies=enemies, allow_heldout=allow_heldout, combat=combat,
+                       switch_exit=switch_exit, stairs=stairs)
     text, stats = to_udmf(lay)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -690,9 +899,11 @@ def generate(seed: int, stage: int, out_path: str | Path, *, enemies: bool = Tru
     return metadata(lay, str(out_path), stats)
 
 
-def generate_set(stage: int, seeds: Iterable[int], out_dir: str | Path, *, allow_heldout: bool = False) -> list[dict]:
+def generate_set(stage: int, seeds: Iterable[int], out_dir: str | Path, *, allow_heldout: bool = False,
+                 switch_exit: bool = False, stairs: bool = False) -> list[dict]:
     out_dir = Path(out_dir)
-    return [generate(s, stage, out_dir / f"s{stage}_{s}.wad", allow_heldout=allow_heldout) for s in seeds]
+    return [generate(s, stage, out_dir / f"s{stage}_{s}.wad", allow_heldout=allow_heldout,
+                     switch_exit=switch_exit, stairs=stairs) for s in seeds]
 
 
 def generate_heldout(out_dir: str | Path = HELDOUT_DIR, per_stage: int = 2) -> list[dict]:
@@ -726,12 +937,14 @@ def main(argv=None) -> None:
     ap.add_argument("--seeds", default="0-9", help="e.g. 0-99 or 1,5,7")
     ap.add_argument("--out", default="training/generated_maps")
     ap.add_argument("--heldout", action="store_true", help="write the held-out set to maps/heldout/")
+    ap.add_argument("--switch-exit", action="store_true", help="exit is a wall switch (training only)")
+    ap.add_argument("--stairs", action="store_true", help="room floor heights + staircases (training only)")
     args = ap.parse_args(argv)
     if args.heldout:
         metas = generate_heldout()
         print(f"wrote {len(metas)} held-out maps to {HELDOUT_DIR}")
         return
-    metas = generate_set(args.stage, _parse_seeds(args.seeds), args.out)
+    metas = generate_set(args.stage, _parse_seeds(args.seeds), args.out, switch_exit=args.switch_exit, stairs=args.stairs)
     Path(args.out, f"manifest_s{args.stage}.json").write_text(json.dumps(metas, indent=1))
     for m in metas:
         print(f"{m['wad']}: rooms={m['num_rooms']} enemies={m['num_enemies']} key={m['key_color']} sectors={m['num_sectors']} lines={m['num_lines']}")

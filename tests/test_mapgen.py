@@ -162,10 +162,10 @@ def door_side_cell(lay: M.Layout, conn: M.Conn) -> tuple[int, int]:
     raise AssertionError("door not reachable")
 
 
-def make(lay_seed, stage, tmp_path, enemies=True):
+def make(lay_seed, stage, tmp_path, enemies=True, **flags):
     path = tmp_path / f"s{stage}_{lay_seed}.wad"
-    meta = M.generate(lay_seed, stage, path, enemies=enemies)
-    lay = M.build_layout(lay_seed, stage, enemies=enemies)
+    meta = M.generate(lay_seed, stage, path, enemies=enemies, **flags)
+    lay = M.build_layout(lay_seed, stage, enemies=enemies, **flags)
     env = make_env(str(path), "MAP01", render_buffers=False, episode_ticks=meta["episode_ticks"])
     return meta, lay, env
 
@@ -299,3 +299,112 @@ def test_heldout_solvable(meta, tmp_path):
     d.go(lay.exit_cells[0], max_steps=1500)
     assert d.info["exit_reached"]
     env.close()
+
+
+# ------------------------------------------------------------------ training-only options
+# switch_exit: exit is a use-activated wall switch; stairs: rooms at different floor heights joined
+# by staircases. Both are off by default (the held-out identity tests above cover that).
+def _udmf(lay):
+    from doom_env.mapinfo import parse_udmf
+    return parse_udmf(M.to_udmf(lay)[0])
+
+
+def switch_point(lay: M.Layout, cell) -> tuple[float, float]:
+    """Map-unit midpoint of the switch edge directly in front of room cell `cell`."""
+    ox, oy = lay.offset
+    for o, coord, pos in lay.switch_edges:
+        if o == "v" and pos == cell[1] and coord in (cell[0], cell[0] + 1):
+            return coord * M.CELL + ox, (pos + 0.5) * M.CELL + oy
+        if o == "h" and pos == cell[0] and coord in (cell[1], cell[1] + 1):
+            return (pos + 0.5) * M.CELL + ox, coord * M.CELL + oy
+    raise AssertionError("no switch edge next to the exit cell")
+
+
+def press_switch(d: Driver, lay: M.Layout) -> None:
+    """Walk to the cell in front of the exit switch, face it, walk up to the wall, press USE once
+    (rising edge). Retried a few times because the player keeps momentum after `go`."""
+    for _ in range(4):
+        assert d.go(lay.exit_cells[0], max_steps=2500, tol=12)
+        if d.done:
+            return  # the stuck-handler's USE already hit the switch
+        for _ in range(6):  # let momentum die down
+            d.step(NOOP)
+        target = switch_point(lay, lay.exit_cells[0])
+        for _ in range(30):
+            d.face(target, steps=10)
+            d.step(NOOP)
+            if d.obs["rays"]["distance"][0] * 1024 < 40:  # wall (the switch) right ahead, within USE range
+                break
+            d.step(act(fwd=True))
+        d.step(act(use=True))
+        for _ in range(3):
+            if not d.done:
+                d.step(NOOP)
+        if d.done:
+            return
+
+
+@pytest.mark.parametrize("stage", [2, 3, 4])
+def test_switch_exit_maps(stage, tmp_path):
+    meta, lay, env = make(7, stage, tmp_path, switch_exit=True)
+    assert meta["switch_exit"] and not meta["stairs"] and meta["exit_switch"] is not None
+    lines = _udmf(lay)["linedef"]
+    exits = [ln for ln in lines if ln.get("special") == 243]
+    assert exits and all(ln.get("playeruse") and not ln.get("playercross") and "sideback" not in ln for ln in exits)
+    assert all(lay.sectors[s].kind != "exit" for s in range(len(lay.sectors)))
+    # same rooms / key / start as the default map of that seed (only the exit kind changes)
+    base = M.build_layout(7, stage)
+    assert (base.start_cell, base.key_cell, base.exit_room) == (lay.start_cell, lay.key_cell, lay.exit_room)
+    env.reset()
+    assert len(env._game.get_state().sectors) == meta["num_sectors"] == env.mapinfo.num_sectors
+    assert env.mapinfo.door_sectors == {s: lock for s, lock in meta["door_sectors"]}
+    for _ in range(10):
+        env.step(env.action_space.sample())
+    env.close()
+
+
+@pytest.mark.parametrize("stage", [2, 3, 4])
+def test_stairs_maps(stage, tmp_path):
+    meta, lay, env = make(7, stage, tmp_path, stairs=True)
+    assert meta["stairs"] and not meta["switch_exit"]
+    env.reset()
+    assert len(env._game.get_state().sectors) == meta["num_sectors"] == env.mapinfo.num_sectors
+    assert env.mapinfo.door_sectors == {s: lock for s, lock in meta["door_sectors"]}
+    st = env.privileged_state()
+    floor, ceil = np.asarray(st["sector_floor"]), np.asarray(st["sector_ceiling"])  # engine-side values
+    assert len({float(floor[r.sector]) for r in lay.rooms}) >= 2
+    g = lay.grid
+    for a, b in ((g[:-1, :], g[1:, :]), (g[:, :-1], g[:, 1:])):
+        m = (a >= 0) & (b >= 0)
+        assert np.abs(floor[a[m]] - floor[b[m]]).max() <= 24  # every walkable neighbour pair is a step
+    doors = set(env.mapinfo.door_sectors)
+    walk = [s for s in range(len(lay.sectors)) if s not in doors]
+    assert (ceil[walk] - floor[walk] >= 72).all()
+    for c in lay.conns:  # doors sit on flat ground and are closed (ceiling == floor)
+        if c.door_sector >= 0:
+            i = c.chain.index(c.door_sector)
+            assert floor[c.chain[i - 1]] == floor[c.door_sector] == floor[c.chain[i + 1]] == ceil[c.door_sector]
+    for _ in range(10):
+        env.step(env.action_space.sample())
+    env.close()
+
+
+@pytest.mark.parametrize("stage,seed", [(2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 2)])
+def test_switch_stairs_solvable(stage, seed, tmp_path):
+    """Both options on: fetch the key (stage 3), climb the stairs, press the exit switch."""
+    meta, lay, env = make(seed, stage, tmp_path, enemies=False, switch_exit=True, stairs=True)
+    assert len({lay.sectors[r.sector].floor for r in lay.rooms}) >= 2 and lay.exit_sector == -1
+    env.reset()
+    d = Driver(env, lay)
+    if lay.key_cell is not None:
+        assert d.go(lay.key_cell, blocked=set(lay.conns[lay.locked_conn].door_cells), max_steps=1500, tol=16)
+        d.step(NOOP)
+    press_switch(d, lay)
+    assert d.info["exit_reached"]
+    env.close()
+
+
+def test_flags_deterministic(tmp_path):
+    for f in ("a", "b"):
+        M.generate(42, 3, tmp_path / f"{f}.wad", switch_exit=True, stairs=True)
+    assert (tmp_path / "a.wad").read_bytes() == (tmp_path / "b.wad").read_bytes()
