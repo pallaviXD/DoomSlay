@@ -43,3 +43,18 @@ Ego-centric spatial data is recommended over raw pixels (rays + hit types, depth
 - Repo created during the hackathon; libraries OK, core architecture and training built during the event;
   training code stays in the repo (judges read it).
 - Fair play: only the given observations; no access to engine/maps/network/host; don't exhaust shared resources.
+
+## Organiser hints (message to Track 1 teams, 2026-11-27)
+Research topics they named, and where we stand:
+- Core RL: PPO, actor-critic, recurrent PPO for memory → **done** (training/ppo.py, GRU policy).
+- Exploration & rewards: reward shaping, curriculum learning, intrinsic curiosity (RND / count-based) →
+  shaping + curriculum **done**; **count-based** novelty bonus (new 64-unit cell) done; RND not implemented.
+- Hard maps (keycards/doors): behavioural cloning / imitation → PPO fine-tuning → **not done** (possible next step:
+  record the scripted solver from tests/test_mapgen.py as a teacher on stage-3/4 maps, BC-pretrain, then PPO).
+- Inputs & actions: action masking, ego-centric occupancy grids → **both done** (model.apply_action_mask,
+  submission/spatial_memory.py).
+- Training speed & generalisation: vectorised envs, procedural WAD maps / Freedoom → **done** (64 envs,
+  training/mapgen.py, training/realmaps.py).
+Earlier organiser checklist: real weights via LFS, env/ + validate.py synced to the template, 2 GB VRAM / 8 GB RAM /
+1 CPU, inference self-contained in submission/, 6 hidden maps across 4 tiers; quirks: USE fires on a fresh press,
+killing all enemies doesn't end a map, holding pistol fire spreads shots.
