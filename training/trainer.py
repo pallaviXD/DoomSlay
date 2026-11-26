@@ -40,6 +40,7 @@ def parse():
     ap.add_argument("--max-stage", type=int, default=4)
     ap.add_argument("--fixed-stage", action="store_true", help="stay on --stage (no auto-advance)")
     ap.add_argument("--mixed", action="store_true", help="sample all stages from the start")
+    ap.add_argument("--thresholds", default="0.6,0.5,0.4", help="exit rate to advance from stage 1,2,3")
     ap.add_argument("--pool-size", type=int, default=48)
     ap.add_argument("--regen-episodes", type=int, default=1500)
     ap.add_argument("--resume", default=None, help="checkpoint to initialise weights from")
@@ -80,7 +81,8 @@ def main():
     ppo = PPO(net, cfg, dev)
     cur = Curriculum(ROOT / "training" / "generated_maps" / a.run, start_stage=a.stage, max_stage=a.max_stage,
                      pool_size=a.pool_size, regen_episodes=a.regen_episodes, mixed=a.mixed, seed=a.seed,
-                     fixed_stage=a.fixed_stage)
+                     fixed_stage=a.fixed_stage,
+                     thresholds={i + 1: float(x) for i, x in enumerate(a.thresholds.split(","))} | {4: 1.1})
     start_update, steps_done, best = 0, 0, -1e9
     if a.resume:
         ck = torch.load(a.resume, map_location=dev, weights_only=False)
