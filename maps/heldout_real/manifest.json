@@ -1,0 +1,38 @@
+[
+ {
+  "wad": "real_MAP02.wad",
+  "map": "MAP01",
+  "source": "MAP02",
+  "monsters_kept": 73,
+  "monsters_total": 73,
+  "episode_ticks": 4200,
+  "stage": 5
+ },
+ {
+  "wad": "real_MAP08.wad",
+  "map": "MAP01",
+  "source": "MAP08",
+  "monsters_kept": 134,
+  "monsters_total": 134,
+  "episode_ticks": 4200,
+  "stage": 5
+ },
+ {
+  "wad": "real_MAP15.wad",
+  "map": "MAP01",
+  "source": "MAP15",
+  "monsters_kept": 214,
+  "monsters_total": 214,
+  "episode_ticks": 4200,
+  "stage": 5
+ },
+ {
+  "wad": "real_MAP31.wad",
+  "map": "MAP01",
+  "source": "MAP31",
+  "monsters_kept": 25,
+  "monsters_total": 25,
+  "episode_ticks": 4200,
+  "stage": 5
+ }
+]

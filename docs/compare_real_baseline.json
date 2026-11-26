@@ -1,0 +1,22 @@
+{
+ "best_upd2175": {
+  "score": 11.286875,
+  "exit_rate": 0.0,
+  "keys": 0.0,
+  "doors": 1.0,
+  "locked_doors": 0.0,
+  "kills": 3.5,
+  "cells": 73.25,
+  "damage": 125.5,
+  "deaths": 1.0,
+  "agent_ms": 1.9408435351366702,
+  "invalid": 0,
+  "by_stage": {
+   "5": {
+    "exit_rate": 0.0,
+    "score": 11.286875
+   }
+  },
+  "exits": "0/8"
+ }
+}

@@ -21,14 +21,14 @@ from training import mapgen
 
 MIX_WEIGHTS = {1: 0.15, 2: 0.30, 3: 0.35, 4: 0.20}
 # Stuck cut-off window (tics) per stage: key maps need backtracking through visited rooms.
-STUCK_TICKS_BY_STAGE = {1: 200, 2: 200, 3: 400, 4: 400}
+STUCK_TICKS_BY_STAGE = {1: 200, 2: 200, 3: 400, 4: 400, 5: 600}  # 5 = real Freedoom levels (large)
 
 
 class Curriculum:
     def __init__(self, out_dir: str | Path, start_stage: int = 1, max_stage: int = 4, pool_size: int = 48,
                  regen_episodes: int = 1500, window: int = 300, thresholds: dict | None = None,
                  replay_frac: float = 0.25, mixed: bool = False, seed: int = 0, fixed_stage: bool = False,
-                 combat_frac: float = 0.0):
+                 combat_frac: float = 0.0, real_frac: float = 0.0, variety_frac: float = 0.0):
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.stage = start_stage
@@ -41,8 +41,17 @@ class Curriculum:
         self.fixed_stage = fixed_stage  # never auto-advance (single-stage training runs)
         # Share of the pool replaced by stage-1 combat arenas (4-8 monsters) for aiming practice.
         self.combat_frac = combat_frac
+        # Share of the pool that is real hand-made Freedoom levels (training/realmaps.py, stage 5): the
+        # closest thing we have to the hidden evaluation maps (stairs, lifts, switches, odd shapes).
+        self.real_frac = real_frac
+        self.real_maps = sorted(str(p) for p in (Path(__file__).resolve().parent / "generated_maps" / "real").glob("*.wad"))
+        # Probability that a generated stage 2-4 map uses an exit switch / stairs (mapgen options).
+        self.variety_frac = variety_frac
+        import inspect
+
+        self._mapgen_opts = set(inspect.signature(mapgen.generate).parameters)
         self.rng = np.random.default_rng(seed)
-        self.recent = {s: deque(maxlen=window) for s in range(1, 5)}
+        self.recent = {s: deque(maxlen=window) for s in range(1, 6)}
         self.window = window
         self.eps_since_regen = 0
         self.generation = 0
@@ -68,12 +77,23 @@ class Curriculum:
         gen_dir.mkdir(parents=True, exist_ok=True)
         pool = []
         for i, st in enumerate(stages):
+            if self.real_maps and self.rng.random() < self.real_frac:
+                wad = self.real_maps[int(self.rng.integers(len(self.real_maps)))]
+                pool.append({"wad": wad, "map": "MAP01", "ticks": 4200, "stage": 5, "seed": -1,
+                             "stuck_ticks": STUCK_TICKS_BY_STAGE[5]})
+                continue
             seed = int(self.rng.integers(0, mapgen.HELDOUT_SEED_BASE))  # never a held-out seed
             combat = bool(self.rng.random() < self.combat_frac)
             if combat:
                 st = 1
-            path = gen_dir / f"s{st}{'c' if combat else ''}_{seed}.wad"
-            meta = mapgen.generate(seed, int(st), path, combat=combat)
+            opts = {}
+            if int(st) >= 2:
+                for k in ("switch_exit", "stairs"):
+                    if k in self._mapgen_opts and self.rng.random() < self.variety_frac:
+                        opts[k] = True
+            tag = ("c" if combat else "") + ("w" if opts.get("switch_exit") else "") + ("t" if opts.get("stairs") else "")
+            path = gen_dir / f"s{st}{tag}_{seed}.wad"
+            meta = mapgen.generate(seed, int(st), path, combat=combat, **opts)
             pool.append({"wad": str(path), "map": meta.get("map", "MAP01"),
                          "ticks": int(meta.get("episode_ticks", 2100)), "stage": int(st), "seed": seed,
                          "stuck_ticks": STUCK_TICKS_BY_STAGE.get(int(st), 200)})
