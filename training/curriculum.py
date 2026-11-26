@@ -20,6 +20,8 @@ import numpy as np
 from training import mapgen
 
 MIX_WEIGHTS = {1: 0.15, 2: 0.30, 3: 0.35, 4: 0.20}
+# Stuck cut-off window (tics) per stage: key maps need backtracking through visited rooms.
+STUCK_TICKS_BY_STAGE = {1: 200, 2: 200, 3: 400, 4: 400}
 
 
 class Curriculum:
@@ -67,7 +69,8 @@ class Curriculum:
             path = gen_dir / f"s{st}_{seed}.wad"
             meta = mapgen.generate(seed, int(st), path)
             pool.append({"wad": str(path), "map": meta.get("map", "MAP01"),
-                         "ticks": int(meta.get("episode_ticks", 2100)), "stage": int(st), "seed": seed})
+                         "ticks": int(meta.get("episode_ticks", 2100)), "stage": int(st), "seed": seed,
+                         "stuck_ticks": STUCK_TICKS_BY_STAGE.get(int(st), 200)})
         self.pool = pool
         self.generation += 1
         self.eps_since_regen = 0

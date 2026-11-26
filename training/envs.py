@@ -78,6 +78,9 @@ def _worker(conn, wid: int, maps: list[dict], seed: int, episodes_per_map: int, 
                 load(nxt)
         eps_on_map += 1
         obs, _ = env.reset(seed=int(rng.integers(2**31)))
+        # Per-map stuck window (curriculum sets longer windows on key maps, where backtracking through
+        # already-visited rooms is required and earns no new-cell progress).
+        shaper.stuck_ticks = int(cur.get("stuck_ticks", stuck_ticks))
         shaper.reset(env.privileged_state(), env.mapinfo.door_sectors)
         return obs
 
