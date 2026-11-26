@@ -42,9 +42,11 @@ def parse():
     ap.add_argument("--mixed", action="store_true", help="sample all stages from the start")
     ap.add_argument("--thresholds", default="0.6,0.5,0.4", help="exit rate to advance from stage 1,2,3")
     ap.add_argument("--pool-size", type=int, default=48)
+    ap.add_argument("--combat-frac", type=float, default=0.0, help="share of pool that is combat arenas")
     ap.add_argument("--regen-episodes", type=int, default=1500)
     ap.add_argument("--resume", default=None, help="checkpoint to initialise weights from")
     ap.add_argument("--resume-opt", action="store_true", help="also restore optimizer/curriculum state")
+    ap.add_argument("--reset-best", action="store_true", help="ignore the checkpoint's best held-out score")
     ap.add_argument("--eval-every", type=int, default=25, help="updates between held-out evals")
     ap.add_argument("--ckpt-every", type=int, default=25)
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -81,7 +83,7 @@ def main():
     ppo = PPO(net, cfg, dev)
     cur = Curriculum(ROOT / "training" / "generated_maps" / a.run, start_stage=a.stage, max_stage=a.max_stage,
                      pool_size=a.pool_size, regen_episodes=a.regen_episodes, mixed=a.mixed, seed=a.seed,
-                     fixed_stage=a.fixed_stage,
+                     fixed_stage=a.fixed_stage, combat_frac=a.combat_frac,
                      thresholds={i + 1: float(x) for i, x in enumerate(a.thresholds.split(","))} | {4: 1.1})
     start_update, steps_done, best = 0, 0, -1e9
     if a.resume:
@@ -92,7 +94,7 @@ def main():
             start_update, steps_done = ck.get("update", 0), ck.get("steps", 0)
             if "curriculum" in ck:
                 cur.load_state(ck["curriculum"])
-            best = ck.get("best_score", best)
+            best = best if a.reset_best else ck.get("best_score", best)
         print(f"resumed from {a.resume}")
 
     if a.smoke:

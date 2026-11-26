@@ -249,7 +249,7 @@ def _room_graph(rng: random.Random, stage: int) -> tuple[tuple[int, int], list[t
     return dims, slots, edges, n_tree
 
 
-def _try_build(rng: random.Random, seed: int, stage: int, enemies: bool) -> Layout:
+def _try_build(rng: random.Random, seed: int, stage: int, enemies: bool, combat: bool = False) -> Layout:
     dims, slots, edges, _ = _room_graph(rng, stage)
     n = len(slots)
     lo, hi = (6, 14)
@@ -441,6 +441,8 @@ def _try_build(rng: random.Random, seed: int, stage: int, enemies: bool) -> Layo
     # --- enemies: (count range, type weights) per stage
     if stage == 1:
         n_en, weights = rng.randint(1, 4), {"zombieman": 6, "shotgunguy": 2, "imp": 2}
+        if combat:  # training-only aiming practice; consumes the same rng calls, so default maps are unchanged
+            n_en, weights = n_en + 3 + n_en % 2, {"zombieman": 4, "shotgunguy": 3, "imp": 3, "demon": 1}
     elif stage in (2, 3):
         n_en, weights = rng.randint(2, 6), {"zombieman": 5, "shotgunguy": 2, "imp": 3, "demon": 1}
     else:
@@ -496,8 +498,9 @@ def _validate(lay: Layout) -> None:
         raise _Retry("diagonal pinch")
 
 
-def build_layout(seed: int, stage: int, *, enemies: bool = True, allow_heldout: bool = False) -> Layout:
-    """Deterministic layout for (seed, stage). `enemies=False` is for scripted solvability tests."""
+def build_layout(seed: int, stage: int, *, enemies: bool = True, allow_heldout: bool = False, combat: bool = False) -> Layout:
+    """Deterministic layout for (seed, stage). `enemies=False` is for scripted solvability tests.
+    `combat=True` (stage 1 only, training): same arena with 4-8 monsters, for aiming practice."""
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {STAGES}")
     if is_heldout_seed(seed) and not allow_heldout:
@@ -505,7 +508,7 @@ def build_layout(seed: int, stage: int, *, enemies: bool = True, allow_heldout: 
     rng = random.Random(int(seed) * 16 + stage)
     for _ in range(200):
         try:
-            return _try_build(rng, int(seed), stage, enemies)
+            return _try_build(rng, int(seed), stage, enemies, combat)
         except _Retry:
             continue
     raise RuntimeError(f"could not build a valid layout for seed={seed} stage={stage}")
@@ -676,9 +679,10 @@ def metadata(lay: Layout, wad_path: str, stats: dict | None = None) -> dict:
     }
 
 
-def generate(seed: int, stage: int, out_path: str | Path, *, enemies: bool = True, allow_heldout: bool = False) -> dict:
+def generate(seed: int, stage: int, out_path: str | Path, *, enemies: bool = True, allow_heldout: bool = False,
+             combat: bool = False) -> dict:
     """Write a one-map PWAD (MAP01) for (seed, stage) to `out_path`; return JSON-able metadata."""
-    lay = build_layout(seed, stage, enemies=enemies, allow_heldout=allow_heldout)
+    lay = build_layout(seed, stage, enemies=enemies, allow_heldout=allow_heldout, combat=combat)
     text, stats = to_udmf(lay)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

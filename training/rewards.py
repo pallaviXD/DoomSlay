@@ -28,6 +28,16 @@ REWARD_WEIGHTS = {
     # Added at 5.3M steps: inspection showed USE pressed ~50% of steps with or without a door ahead;
     # spamming USE on a moving door reverses it (CONTRACT §3). Tiny cost per press (rising edge).
     "use_press": -0.003,
+    # Added at ~8M steps (user review of gameplay videos: "shoots empty air, no target").
+    # Potential-based aim shaping (Ng et al. 1999): phi = aim_potential * max cos(angle to a visible
+    # monster); reward gamma*phi(s') - phi(s). Turning a monster towards the crosshair pays, letting it
+    # drift away costs the same, so the optimal policy is unchanged; it only makes aiming learnable.
+    # Computed from the observation's entity list, in training only; the policy is still pure weights.
+    "aim_potential": 0.3,
+    "fire_on_target": 0.02,  # ATTACK pressed while a monster is within ~6 deg of the crosshair
+    # Exit efficiency, mirroring the evaluation's "small efficiency bonus for remaining health and time".
+    "exit_time_bonus": 3.0,  # x fraction of the episode time left
+    "exit_health_bonus": 2.0,  # x health/100 at the exit
     "new_cell": 0.05,  # first visit of a 64x64 grid cell (true position, training only)
     "pickup_when_low": 0.1,  # health gained while health < 50, or ammo gained while selected ammo < 10
     "damage_per_hp": -0.01,
@@ -35,6 +45,21 @@ REWARD_WEIGHTS = {
     "step": -0.001,
     "stuck": -1.0,  # no progress for STUCK_TICKS -> penalty and episode cut off
 }
+ENEMY_TYPE_IDS = (1, 2, 3)  # doom_env.spaces.ENTITY_TYPES: enemy_melee, enemy_hitscan, enemy_projectile
+ON_TARGET_COS = 0.995  # ~5.7 degrees
+GAMMA = 0.99  # must match PPO gamma for the shaping to be potential-based
+
+
+def aim_alignment(ents: dict | None) -> float:
+    """max cos(relative angle) over visible monsters, clipped at 0; 0 when none is visible."""
+    if ents is None:
+        return 0.0
+    m = (np.asarray(ents["mask"]) > 0) & np.isin(np.asarray(ents["entity_type"]), ENEMY_TYPE_IDS)
+    if not m.any():
+        return 0.0
+    return float(max(0.0, np.asarray(ents["features"])[m, 2].max()))
+
+
 CELL_SIZE = 64.0
 STUCK_TICKS = 200  # no new cell / kill / key / door within this many tics -> stuck
 DOOR_OPEN_GAP = 48.0  # door sector counts as open once ceiling - floor exceeds this
@@ -68,8 +93,10 @@ class RewardShaper:
         self.w = dict(REWARD_WEIGHTS, **(weights or {}))
         self.stuck_ticks = stuck_ticks
 
-    def reset(self, priv: dict, door_sectors: dict[int, int]) -> None:
-        """door_sectors: env.mapinfo.door_sectors {sector index: lock (0 = ordinary)}."""
+    def reset(self, priv: dict, door_sectors: dict[int, int], ents: dict | None = None) -> None:
+        """door_sectors: env.mapinfo.door_sectors {sector index: lock (0 = ordinary)}.
+        ents: the first observation's visible_entities (for aim shaping)."""
+        self._align = aim_alignment(ents)
         self.door_sectors = dict(door_sectors)
         self.opened: set[int] = set()
         self.visited = {self._cell(priv)}
@@ -86,9 +113,10 @@ class RewardShaper:
         self.stats.parts[name] = self.stats.parts.get(name, 0.0) + value
         return value
 
-    def step(self, priv: dict, vitals: np.ndarray, action=None) -> tuple[float, bool]:
+    def step(self, priv: dict, vitals: np.ndarray, action=None, ents: dict | None = None) -> tuple[float, bool]:
         """priv: privileged_state() after the step. vitals: the observation's vitals.
-        action: the 9 buttons pressed (optional; used for the USE-press cost).
+        action: the 9 buttons pressed (optional; used for the USE-press and fire-on-target terms).
+        ents: the new observation's visible_entities (optional; aim shaping).
         Returns (shaped reward, stuck_cutoff)."""
         w, prev, s = self.w, self.prev, self.stats
         r = self._add("step", w["step"])
@@ -97,10 +125,21 @@ class RewardShaper:
             if use and not self._prev_use:  # rising edge = an actual press
                 r += self._add("use_press", w["use_press"])
             self._prev_use = use
+            # The action was chosen on the previous observation, whose alignment is self._align.
+            if action[6] and self._align > ON_TARGET_COS:
+                r += self._add("fire_on_target", w["fire_on_target"])
+        if ents is not None:
+            align = 0.0 if priv["finished"] else aim_alignment(ents)
+            r += self._add("aim", w["aim_potential"] * (GAMMA * align - self._align))
+            self._align = align
         progress = False
 
         if priv["exit_reached"]:
             r += self._add("exit", w["exit"])
+            ticks = max(int(priv.get("episode_ticks", 0)), 1)
+            if priv.get("episode_ticks"):
+                r += self._add("exit_eff", w["exit_time_bonus"] * max(0.0, 1.0 - priv["tic"] / ticks))
+            r += self._add("exit_eff", w["exit_health_bonus"] * max(0.0, min(priv["health"], 100.0)) / 100.0)
             s.exit = True
         if priv["dead"]:
             r += self._add("death", w["death"])

@@ -27,7 +27,8 @@ STUCK_TICKS_BY_STAGE = {1: 200, 2: 200, 3: 400, 4: 400}
 class Curriculum:
     def __init__(self, out_dir: str | Path, start_stage: int = 1, max_stage: int = 4, pool_size: int = 48,
                  regen_episodes: int = 1500, window: int = 300, thresholds: dict | None = None,
-                 replay_frac: float = 0.25, mixed: bool = False, seed: int = 0, fixed_stage: bool = False):
+                 replay_frac: float = 0.25, mixed: bool = False, seed: int = 0, fixed_stage: bool = False,
+                 combat_frac: float = 0.0):
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.stage = start_stage
@@ -38,6 +39,8 @@ class Curriculum:
         self.replay_frac = replay_frac
         self.mixed = mixed
         self.fixed_stage = fixed_stage  # never auto-advance (single-stage training runs)
+        # Share of the pool replaced by stage-1 combat arenas (4-8 monsters) for aiming practice.
+        self.combat_frac = combat_frac
         self.rng = np.random.default_rng(seed)
         self.recent = {s: deque(maxlen=window) for s in range(1, 5)}
         self.window = window
@@ -66,8 +69,11 @@ class Curriculum:
         pool = []
         for i, st in enumerate(stages):
             seed = int(self.rng.integers(0, mapgen.HELDOUT_SEED_BASE))  # never a held-out seed
-            path = gen_dir / f"s{st}_{seed}.wad"
-            meta = mapgen.generate(seed, int(st), path)
+            combat = bool(self.rng.random() < self.combat_frac)
+            if combat:
+                st = 1
+            path = gen_dir / f"s{st}{'c' if combat else ''}_{seed}.wad"
+            meta = mapgen.generate(seed, int(st), path, combat=combat)
             pool.append({"wad": str(path), "map": meta.get("map", "MAP01"),
                          "ticks": int(meta.get("episode_ticks", 2100)), "stage": int(st), "seed": seed,
                          "stuck_ticks": STUCK_TICKS_BY_STAGE.get(int(st), 200)})

@@ -179,7 +179,7 @@ def test_reward_components():
     assert r == pytest.approx(w["step"] + w["door_open"] + w["locked_door_bonus"])
     r, _ = sh.step(priv(tic=24, x=100.0, kills=1, damage_taken=10.0, keys=keys, exit_reached=True, finished=True,
                         sector_ceiling=np.array([0, 0, 128.0])), vit())
-    assert r == pytest.approx(w["step"] + w["exit"])
+    assert r == pytest.approx(w["step"] + w["exit"] + w["exit_health_bonus"])  # health 100, no tick info
     s = sh.stats
     assert (s.kills, s.keys, s.doors, s.locked_doors, s.exit, s.cells) == (1, 1, 1, 1, True, 2)
 
@@ -222,3 +222,48 @@ def test_use_press_cost_rising_edge():
     r2, _ = sh.step(priv(tic=8), vit(), use)  # held: no new press
     assert r1 == pytest.approx(REWARD_WEIGHTS["step"] + REWARD_WEIGHTS["use_press"])
     assert r2 == pytest.approx(REWARD_WEIGHTS["step"])
+
+
+def ents_with(cos_list):
+    f = np.zeros((32, 5), np.float32)
+    t = np.zeros(32, np.int64)
+    m = np.zeros(32, np.float32)
+    for i, c in enumerate(cos_list):
+        f[i, 2] = c
+        t[i] = 2  # enemy_hitscan
+        m[i] = 1
+    return {"features": f, "entity_type": t, "mask": m}
+
+
+def test_aim_shaping_is_potential_based():
+    from training.rewards import GAMMA
+    w = REWARD_WEIGHTS
+    sh = RewardShaper()
+    sh.reset(priv(), {}, ents_with([0.5]))
+    r1, _ = sh.step(priv(tic=4), vit(), None, ents_with([0.9]))  # turned towards the monster
+    assert r1 == pytest.approx(w["step"] + w["aim_potential"] * (GAMMA * 0.9 - 0.5))
+    r2, _ = sh.step(priv(tic=8), vit(), None, ents_with([0.5]))  # turned away: pays it back
+    assert r2 == pytest.approx(w["step"] + w["aim_potential"] * (GAMMA * 0.5 - 0.9))
+    r3, _ = sh.step(priv(tic=12), vit(), None, ents_with([]))  # lost sight
+    assert r3 == pytest.approx(w["step"] - w["aim_potential"] * 0.5)
+
+
+def test_fire_on_target_uses_decision_observation():
+    w = REWARD_WEIGHTS
+    sh = RewardShaper()
+    sh.reset(priv(), {}, ents_with([0.999]))  # monster in the crosshair when the action is chosen
+    fire = np.zeros(9, np.int8)
+    fire[6] = 1
+    r, _ = sh.step(priv(tic=4), vit(), fire, ents_with([0.999]))
+    assert r == pytest.approx(w["step"] + w["fire_on_target"] + w["aim_potential"] * (0.99 * 0.999 - 0.999))
+    sh.reset(priv(), {}, ents_with([]))  # nothing to shoot at
+    r, _ = sh.step(priv(tic=4), vit(), fire, ents_with([]))
+    assert r == pytest.approx(w["step"])
+
+
+def test_exit_efficiency_bonus():
+    w = REWARD_WEIGHTS
+    sh = RewardShaper()
+    sh.reset(priv(), {})
+    r, _ = sh.step(priv(tic=1050, episode_ticks=2100, health=50.0, exit_reached=True, finished=True), vit())
+    assert r == pytest.approx(w["step"] + w["exit"] + 0.5 * w["exit_time_bonus"] + 0.5 * w["exit_health_bonus"])
