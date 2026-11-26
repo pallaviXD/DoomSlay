@@ -200,9 +200,12 @@ def build(log_paths: list[Path], fair_spec, out: Path) -> None:
         "and health bonus), keycard +3, door +2 (+4 locked), kill +1, damage dealt +0.01/HP, ammo spent −0.02, "
         "<b>potential-based aim shaping</b> (0.3·cos to the nearest visible monster, policy-invariant), a "
         "<b>count-based intrinsic curiosity</b> bonus (+0.05 per new 64-unit cell), damage taken −0.01/HP, death −3, "
-        "stuck −1 with cut-off. <b>Action masking</b> from observation fields (fire only with a visible monster, "
-        "tap-fire, USE only within reach) is implemented and stored per checkpoint; it removed all wasted shots in "
-        "replays, but the submitted checkpoint, chosen by a 12-seed test, was trained and runs without masks. "
+        "stuck −1 with cut-off (final weights: exit 15 + up to 6 time bonus, kill 1, step −0.002). <b>Action "
+        "masking</b> from observation fields, stored per checkpoint and used by the submission: fire only with a "
+        "monster near the crosshair and tap-fire (holding pistol fire spreads shots), weapon switch only from the fist "
+        "with ammo left (replays showed weapon-switch spam and 'punching air'), USE only within reach; the network "
+        "still makes every decision and must turn to aim by itself. Final run: 64 envs on the scored tiers "
+        "(stage mix 5/35/35/25%, 5% real levels, 10% combat arenas), lr 1e-4 → 5e-5 following global steps. "
         "<b>Recurrent PPO "
         "(ours):</b> GAE(0.99, 0.95), clip 0.2, clipped value loss, 4 epochs, 128-step rollouts × 64 envs, 32-step "
         "truncated BPTT, entropy 0.01, lr 3e-4 → 1e-4; a CPU actor runs rollouts and the GPU learns. Checkpoints "
@@ -224,9 +227,10 @@ def build(log_paths: list[Path], fair_spec, out: Path) -> None:
         " Per-step latency is about 2 ms against the 40 ms budget. We also inspect every candidate by replay "
         "(videos, top-down paths, behaviour statistics such as 'fires when a monster is visible' vs 'not visible').")]
     st += [P("Limitations", h2), P(
-        "Aiming is the weakest skill, so the agent still dies on crowded tier-4 maps. Next steps: behavioural cloning "
-        "from our scripted keycard solver followed by PPO fine-tuning, and RND curiosity. Full-size Freedoom levels "
-        "with all monsters are still unsolved (0/8 exits on the "
+        "Tier-4 gauntlets (17% exits) and keycard maps (50%) are the weakest; checkpoints better on generated maps were "
+        "rejected because they failed the hand-made template map (the final one solves it 16/16). Behavioural cloning "
+        "from our scripted solver was built and tested but hurt (4/24 vs 14/24 exits: teacher style mismatch), so it "
+        "is not used; RND curiosity is a next step. Full-size Freedoom levels with all monsters are still unsolved (0/8 exits on the "
         "real held-out set), though they are far larger than a 2–4k-tic evaluation map. Dead reckoning drifts over "
         "long episodes (the map stays locally consistent). Pixels are not used. Training ran on one laptop "
         "(~1.3k steps/s, about " + f"{log[-1]['steps'] / 1e6:.0f}" + " M steps in total).")]
@@ -242,15 +246,17 @@ FAIR_SPEC = [  # (label, [(comparison json, checkpoint key), ...]) averaged; see
     ("+ hit/ammo/door rewards, update 2050 (6.3 M)", [(ROOT / "docs" / "compare.json", "snap_1822"),
                                                         (ROOT / "docs" / "compare2.json", "snap_1822")]),
     ("+ spatial memory, real levels, update 2800", [(ROOT / "docs" / "compare_mem2800.json", "best_upd2800")]),
-    ("+ masks (trained with them), update 4160", [(ROOT / "docs" / "compare_final_masked.json", "cand_mask4160"),
-                                                   (ROOT / "docs" / "tb_m4160.json", "cand_mask4160")]),
-    ("FINAL: + aim shaping, update 3000 (12 seeds)", [(ROOT / "docs" / "results_final.json", "final")]),
+    ("+ aim shaping, update 3000 (12 seeds)", [(ROOT / "docs" / "compare_mem3000.json", "best_upd3000"),
+                                               (ROOT / "docs" / "tb_3000.json", "best_upd3000")]),
+    ("+ crosshair/weapon masks, update 4240 (12 seeds)", [(ROOT / "docs" / "compare_l3_4240.json", "cand_l3_4240"),
+                                                          (ROOT / "docs" / "compare_l3_4240_b.json", "cand_l3_4240")]),
+    ("FINAL: + tier-focused mix, update 4800 (12 seeds)", [(ROOT / "docs" / "results_final.json", "final")]),
 ]
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "brief.pdf"))
     a = ap.parse_args()
-    logs = [ROOT / "checkpoints" / r / "heldout_log.jsonl" for r in ("cur1", "aim1", "mem1")]
+    logs = [ROOT / "checkpoints" / r / "heldout_log.jsonl" for r in ("cur1", "aim1", "mem1", "mem2", "mem3")]
     build(logs, FAIR_SPEC, Path(a.out))
     print("wrote", a.out)

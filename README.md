@@ -81,7 +81,7 @@ spatial memory: self-built map, 5 x 21 x 21 ---- CNN x2 ------------------------
 | **Spatial memory** ([submission/spatial_memory.py](submission/spatial_memory.py)) | The agent draws its own occupancy map in a dead-reckoned frame. Heading comes from its own TURN presses (DOOM's keyboard turn rate is deterministic: 1.76°/tic for the first 5 tics, then 3.52°/tic) and translation from the vitals velocity; the rays paint free space, walls, doors and locked doors. A 5×21×21 crop, rotated so "up" is the facing direction, goes through a small CNN. No global coordinates are used. It was added by **warm start**: the new fusion weights start at zero, so a trained policy is unchanged at first (unit-tested exactly). |
 | **GRU memory (256)** | Short-term memory across steps; reset in `reset()` and at every episode boundary in training. |
 | **Factored action heads** | The 9 buttons become 6 categoricals (move, strafe, turn, attack, use, next weapon): no contradictory presses, and the previous action is an input so the policy can learn `USE`'s button-down behaviour. |
-| **Action masks** (from observation fields, allowed by the rules) | ATTACK only when a monster is visible and not two steps in a row (holding pistol fire spreads shots); USE only when something is within reach ahead. The network still makes every decision; masks only remove pointless options. They are stored per checkpoint (`masks`) because they are part of how a policy was trained. The submitted checkpoint was trained without masks, so it runs without them. |
+| **Action masks** (from observation fields, allowed by the rules) | ATTACK only when a monster is visible and not two steps in a row (holding pistol fire spreads shots); USE only when something is within reach ahead. The network still makes every decision; masks only remove pointless options. They are stored per checkpoint (`mask_level`) because they are part of how a policy was trained. The submission uses level 3: fire only with a monster near the crosshair (tap-fire), weapon switch only from the fist with ammo left, USE only within reach. |
 | **1.0 M parameters, CPU inference** | About 2–4 ms per `act()` on 1 thread, well inside the 40 ms budget; no VRAM used. |
 
 ## Training pipeline
@@ -143,19 +143,23 @@ own guess at the hidden weights, weighted by tier. Raw results are in `docs/comp
 | Baseline curriculum, update 1800 (5.5 M steps) | 6 | 44.0 | 50% | 0.42 |
 | + hit / ammo / door rewards, update 2050 | 6 | 47.6 | 48% | 0.23 |
 | + spatial memory + real levels, update 2800 | 6 | 46.4 | 54% | 0.29 |
-| + masks (trained with them), update 4160 | 12 | 48.4 | 60% | 0.23 |
-| **Final submission: + aim shaping, update 3000 (14.4 M steps)** | **12** | **52.3** | **56%** | **0.22** |
+| + aim shaping, update 3000 | 12 | 52.3 | 56% | 0.22 |
+| + crosshair / weapon masks, update 4240 | 12 | 54.2 | 51% | 0.15 |
+| **Final submission: + tier-focused training mix, update 4800 (29.1 M steps)** | **12** | **59.5** | **66%** | **0.12** |
 
-Final submission per tier (levels finished): **combat 100%, multi-room 62%, keycard → locked door 46%,
-gauntlet 17%**. Average decision time 1.9 ms (budget 40 ms); `validate.py` passes.
+Final submission per tier (levels finished): **combat 100%, multi-room 96%, keycard → locked door 50%,
+gauntlet 17%**; 3.25 kills per map; **16/16** exits on the hand-made template map `two_rooms.wad`;
+0% of shots fired with no monster near the crosshair. Decision time about 2–4 ms (budget 40 ms); `validate.py` passes.
 
-The final checkpoint was chosen by a 12-seed comparison of the four best candidates (all within ~4 points):
-it is the only one that reliably finishes tier-4 (gauntlet) maps, which carry the most weight. The mask-trained
-version finishes slightly more easy and medium maps and wastes no shots in replays, but scored lower overall.
+Selection rule (decided by a 4-agent review): a candidate replaces the submission only if it beats it by a clear
+margin on the 12-seed held-out set **and** solves the hand-made map at least as reliably. Several checkpoints with
+higher generated-map scores (up to 63.4) were rejected because they failed `two_rooms` (0/8 to 5/8).
+Behavioural cloning from the scripted solver was implemented ([training/bc_collect.py](training/bc_collect.py),
+[training/bc_train.py](training/bc_train.py)) and tested, but it reduced exits (4/24 vs 14/24), so it is not used.
 On 4 real Freedoom levels with all monsters (much larger than an evaluation map), no version reaches the
 exit yet; the score there rose from 11.3 to 14.4 after adding real levels to training.
 
-Training: about 25 M environment steps on one laptop (RTX 5060 Laptop GPU, i7-14700HX), roughly 10 hours
+Training: about 33 M environment steps on one laptop (RTX 5060 Laptop GPU, i7-14700HX), roughly 13 hours
 including all experiments.
 
 ## Known limitations
