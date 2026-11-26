@@ -178,7 +178,7 @@ def build(log_paths: list[Path], fair_spec, out: Path) -> None:
         "<b>circular</b> 1-D convolution: the 360° ring wraps, and weights shared over heading make a doorway look "
         "the same at any angle. The previous action is an input, so the policy can learn the button-down behaviour "
         "of USE. In training the GRU is reset at every episode boundary, and PPO replays 32-step sequences from the "
-        "stored hidden state (truncated BPTT). On top of the GRU, an <b>explicit spatial memory</b> "
+        "stored hidden state (truncated BPTT). On top of the GRU, an <b>ego-centric occupancy grid</b> "
         "(submission/spatial_memory.py) draws a 160×160 occupancy map (64 units per cell) in a dead-reckoned frame: "
         "heading from the agent's own TURN presses (DOOM's keyboard turn rate is deterministic: 1.76°/tic for the "
         "first 5 tics, then 3.52°/tic), translation from the vitals velocity, and the 64 rays paint free space, walls, "
@@ -198,8 +198,10 @@ def build(log_paths: list[Path], fair_spec, out: Path) -> None:
         "3 → 4 on rolling exit rate; the final mix is 30% real levels, 25% combat arenas, the rest generated stages "
         "with 25% replay; map pools regenerate every 1,500 episodes. <b>Reward</b> (training only): exit +10 (+ time "
         "and health bonus), keycard +3, door +2 (+4 locked), kill +1, damage dealt +0.01/HP, ammo spent −0.02, "
-        "<b>potential-based aim shaping</b> (0.3·cos to the nearest visible monster, policy-invariant), new 64-unit "
-        "cell +0.05 (count-based exploration), damage taken −0.01/HP, death −3, stuck −1 with cut-off. <b>PPO "
+        "<b>potential-based aim shaping</b> (0.3·cos to the nearest visible monster, policy-invariant), a "
+        "<b>count-based intrinsic curiosity</b> bonus (+0.05 per new 64-unit cell), damage taken −0.01/HP, death −3, "
+        "stuck −1 with cut-off. <b>Action masking</b> from observation fields: fire only with a visible monster and "
+        "tap-fire (holding pistol fire spreads shots), USE only within reach. <b>Recurrent PPO "
         "(ours):</b> GAE(0.99, 0.95), clip 0.2, clipped value loss, 4 epochs, 128-step rollouts × 64 envs, 32-step "
         "truncated BPTT, entropy 0.01, lr 3e-4 → 1e-4; a CPU actor runs rollouts and the GPU learns. Checkpoints "
         "are chosen by <b>held-out</b> score, confirmed by a 6-seed test and by watching replays.")]
@@ -220,8 +222,9 @@ def build(log_paths: list[Path], fair_spec, out: Path) -> None:
         " Per-step latency is about 2 ms against the 40 ms budget. We also inspect every candidate by replay "
         "(videos, top-down paths, behaviour statistics such as 'fires when a monster is visible' vs 'not visible').")]
     st += [P("Limitations", h2), P(
-        "Aiming is the weakest skill: the policy fires only slightly more often when a monster is visible, so it dies "
-        "on crowded tier-4 maps. Full-size Freedoom levels with all monsters are still unsolved (0/8 exits on the "
+        "Aiming is the weakest skill, so the agent still dies on crowded tier-4 maps. Next steps: behavioural cloning "
+        "from our scripted keycard solver followed by PPO fine-tuning, and RND curiosity. Full-size Freedoom levels "
+        "with all monsters are still unsolved (0/8 exits on the "
         "real held-out set), though they are far larger than a 2–4k-tic evaluation map. Dead reckoning drifts over "
         "long episodes (the map stays locally consistent). Pixels are not used. Training ran on one laptop "
         "(~1.3k steps/s, about " + f"{log[-1]['steps'] / 1e6:.0f}" + " M steps in total).")]
