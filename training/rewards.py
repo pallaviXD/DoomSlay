@@ -105,6 +105,7 @@ class RewardShaper:
         self.stats = EpisodeStats(cells=1)
         self._prev_ammo = None
         self._prev_use = 0
+        self._prev_fire = 0
 
     def _cell(self, p) -> tuple[int, int]:
         return int(np.floor(p["x"] / CELL_SIZE)), int(np.floor(p["y"] / CELL_SIZE))
@@ -126,8 +127,12 @@ class RewardShaper:
                 r += self._add("use_press", w["use_press"])
             self._prev_use = use
             # The action was chosen on the previous observation, whose alignment is self._align.
-            if action[6] and self._align > ON_TARGET_COS:
+            # Fresh trigger press only (organiser note: holding pistol fire spreads shots, only the first
+            # shot of a burst is accurate). Rewarding taps teaches tap-firing on target, not spraying.
+            fire = int(action[6])
+            if fire and not self._prev_fire and self._align > ON_TARGET_COS:
                 r += self._add("fire_on_target", w["fire_on_target"])
+            self._prev_fire = fire
         if ents is not None:
             align = 0.0 if priv["finished"] else aim_alignment(ents)
             r += self._add("aim", w["aim_potential"] * (GAMMA * align - self._align))

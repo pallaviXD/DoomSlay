@@ -317,3 +317,16 @@ def test_load_compatible_warm_start_is_exact():
     la, va, _ = a.step(o, torch.zeros(3, PREV_ACT_DIM), a.initial_state(3))
     lb, vb, _ = b.step(o, torch.zeros(3, PREV_ACT_DIM), b.initial_state(3))
     assert torch.allclose(la, lb, atol=1e-6) and torch.allclose(va, vb, atol=1e-6)
+
+
+def test_fire_on_target_rewards_taps_not_holding():
+    w = REWARD_WEIGHTS
+    sh = RewardShaper()
+    sh.reset(priv(), {}, ents_with([0.999]))
+    fire = np.zeros(9, np.int8)
+    fire[6] = 1
+    r1, _ = sh.step(priv(tic=4), vit(), fire, ents_with([0.999]))  # fresh press on target
+    r2, _ = sh.step(priv(tic=8), vit(), fire, ents_with([0.999]))  # still held: no bonus
+    aim = w["aim_potential"] * (0.99 * 0.999 - 0.999)
+    assert r1 == pytest.approx(w["step"] + w["fire_on_target"] + aim)
+    assert r2 == pytest.approx(w["step"] + aim)
