@@ -62,6 +62,11 @@ def main():
     g.set_render_messages(True)
     g.set_episode_timeout(ticks)
     g.set_available_game_variables([vd.GameVariable.KILLCOUNT, vd.GameVariable.HEALTH, vd.GameVariable.ITEMCOUNT])
+    # ViZDoom passes through only the listed buttons, even in spectator mode: the same 9 as the agent
+    # plus mouse turning (TURN_LEFT_RIGHT_DELTA) so a human can aim with the mouse.
+    B = vd.Button
+    g.set_available_buttons([B.MOVE_FORWARD, B.MOVE_BACKWARD, B.MOVE_LEFT, B.MOVE_RIGHT, B.TURN_LEFT, B.TURN_RIGHT,
+                             B.ATTACK, B.USE, B.SELECT_NEXT_WEAPON, B.TURN_LEFT_RIGHT_DELTA])
     g.add_game_args("+freelook 0 " + " ".join(f"+bind {b}" for b in BINDS))
     g.init()
     g.new_episode()
