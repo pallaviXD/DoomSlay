@@ -1,29 +1,75 @@
-"""Evaluation entry point. The scorer instantiates DoomAgent from this file.
+"""Team Slay evaluation entry point. The scorer instantiates DoomAgent from this file.
 
-Contract: docs/CONTRACT.md §6. This baseline acts randomly. Replace it with your trained agent.
+Contract: docs/CONTRACT.md §6. Every action comes from the trained network in model.py
+(recurrent PPO policy); this file only converts observations to tensors and keeps the GRU state.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
 SUBMISSION_DIR = Path(__file__).resolve().parent
-WEIGHTS_DIR = SUBMISSION_DIR / "weights"
+WEIGHTS_PATH = SUBMISSION_DIR / "weights.pt"
+
+
+def _load_model_module():
+    # Load submission/model.py under a unique name so it never collides with other "model" modules.
+    spec = importlib.util.spec_from_file_location("slay_model", SUBMISSION_DIR / "model.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["slay_model"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+M = _load_model_module()
+SAFE_ACTION = np.zeros(9, dtype=np.int8)  # stand still: always a valid action
 
 
 class DoomAgent:
     def __init__(self, observation_space, action_space, device: str):
-        """Called once. Load weights here (e.g. from WEIGHTS_DIR) onto `device` ("cuda" or "cpu")."""
+        torch.set_num_threads(1)  # evaluation gives us exactly one CPU thread
         self.observation_space = observation_space
         self.action_space = action_space
-        self.device = device
-        self.rng = np.random.default_rng(0)
+        # The net is ~0.9 M params: one CPU step takes ~1-2 ms, cheaper than GPU launch + transfer
+        # overhead per single-observation step, and it never touches the shared 2 GB VRAM budget.
+        self.device = torch.device("cpu")
+        self.net = M.SlayNet()
+        self.sample = True  # stochastic policy (as trained); fixed seed keeps runs reproducible
+        if WEIGHTS_PATH.is_file():
+            ckpt = torch.load(WEIGHTS_PATH, map_location="cpu", weights_only=True)
+            self.net.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
+            self.sample = bool(ckpt.get("sample", True)) if isinstance(ckpt, dict) else True
+        else:
+            torch.manual_seed(0)  # untrained fallback (Phase 1 baseline); still a neural policy
+        self.net.eval()
+        self.gen = torch.Generator().manual_seed(1234)
+        self.reset()
 
     def reset(self) -> None:
-        """Called before every map. Clear recurrent state, memory buffers and trackers here."""
+        """Before every map: clear GRU memory and previous-action input."""
+        self.h = self.net.initial_state(1)
+        self.prev = torch.zeros(1, M.PREV_ACT_DIM)
 
+    @torch.no_grad()
     def act(self, observation: dict) -> np.ndarray:
-        """Return a MultiBinary action: int array of shape action_space.shape with values in {0, 1}."""
-        return self.rng.integers(0, 2, size=self.action_space.shape, dtype=np.int8)
+        try:
+            p = M.pack_obs(observation)
+            o = {k: torch.from_numpy(v).unsqueeze(0) for k, v in p.items()}
+            logits, _, self.h = self.net.step(o, self.prev, self.h)
+            if self.sample:
+                heads = [torch.multinomial(torch.softmax(lg, -1), 1, generator=self.gen).squeeze(-1)
+                         for lg in M.split_logits(logits)]
+                a = torch.stack(heads, -1)
+            else:
+                a = M.sample_actions(logits, greedy=True)
+            self.prev = M.actions_one_hot(a)
+            return M.actions_to_buttons(a.numpy())[0]
+        except Exception as exc:  # never crash the episode: stand still for this step
+            print(f"[DoomAgent] act() failed: {exc!r}", file=sys.stderr)
+            return SAFE_ACTION.copy()
