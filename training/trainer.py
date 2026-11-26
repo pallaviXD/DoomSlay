@@ -45,6 +45,7 @@ def parse():
     ap.add_argument("--combat-frac", type=float, default=0.0, help="share of pool that is combat arenas")
     ap.add_argument("--masks", action="store_true", help="train with all action masks (= --mask-level 2)")
     ap.add_argument("--mask-level", type=int, default=None, help="0 none, 1 weapon only, 2 weapon+fire+use")
+    ap.add_argument("--mix-weights", default=None, help="force mixed stage sampling, e.g. 0.05,0.35,0.35,0.25")
     ap.add_argument("--real-frac", type=float, default=0.0, help="share of pool that is real Freedoom levels")
     ap.add_argument("--variety-frac", type=float, default=0.0, help="prob. of exit switch / stairs per generated map")
     ap.add_argument("--regen-episodes", type=int, default=1500)
@@ -91,6 +92,9 @@ def main():
                      fixed_stage=a.fixed_stage, combat_frac=a.combat_frac, real_frac=a.real_frac,
                      variety_frac=a.variety_frac,
                      thresholds={i + 1: float(x) for i, x in enumerate(a.thresholds.split(","))} | {4: 1.1})
+    if a.mix_weights:  # spend steps on the tiers that still move the evaluation (expert-panel decision)
+        import training.curriculum as _cur
+        _cur.MIX_WEIGHTS.update({i + 1: float(x) for i, x in enumerate(a.mix_weights.split(","))})
     start_update, steps_done, best = 0, 0, -1e9
     if a.resume:
         ck = torch.load(a.resume, map_location=dev, weights_only=False)
@@ -105,6 +109,8 @@ def main():
             start_update, steps_done = ck.get("update", 0), ck.get("steps", 0)
             if "curriculum" in ck:
                 cur.load_state(ck["curriculum"])
+            if a.mix_weights:
+                cur.mixed = True
             best = best if a.reset_best else ck.get("best_score", best)
         print(f"resumed from {a.resume}")
 

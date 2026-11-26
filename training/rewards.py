@@ -17,7 +17,7 @@ REWARD_WEIGHTS = {
     "door_open": 2.0,  # a door sector opened for the first time (doubles as "unlock" for locked doors)
     # Raised 1 -> 4 at 3.9M steps: agents picked up keys but rarely went back to the locked door.
     "locked_door_bonus": 4.0,  # extra on top of door_open when the opened door was locked
-    "kill": 2.0,  # 1 -> 2 at 25M steps: user review, agent ignored monsters and only ran for the exit
+    "kill": 1.0,  # 2 at 25M (agent ignored monsters), back to 1 at 27M: kills (~7/ep) outweighed exits (~4/ep); damage_dealt stays 0.02
     # Added at 3.9M steps: dense aiming signal (kills alone are sparse). Mirrors damage_per_hp and is
     # bounded by each enemy's health. Engine DAMAGECOUNT, training only.
     "damage_dealt_per_hp": 0.02,  # 0.01 -> 0.02 at 25M steps (same reason)
@@ -36,13 +36,13 @@ REWARD_WEIGHTS = {
     "aim_potential": 0.3,
     "fire_on_target": 0.08,  # ATTACK while a monster is within ~6 deg of the crosshair (0.02 -> 0.08 at 13.7M)
     # Exit efficiency, mirroring the evaluation's "small efficiency bonus for remaining health and time".
-    "exit_time_bonus": 3.0,  # x fraction of the episode time left
+    "exit_time_bonus": 6.0,  # x fraction of the episode time left (3 -> 6 at 27M: most failures are time-outs while searching)
     "exit_health_bonus": 2.0,  # x health/100 at the exit
     "new_cell": 0.05,  # first visit of a 64x64 grid cell (true position, training only)
     "pickup_when_low": 0.1,  # health gained while health < 50, or ammo gained while selected ammo < 10
     "damage_per_hp": -0.01,
     "death": -3.0,
-    "step": -0.001,
+    "step": -0.002,  # -0.001 -> -0.002 at 27M (urgency)
     "stuck": -1.0,  # no progress for STUCK_TICKS -> penalty and episode cut off
 }
 ENEMY_TYPE_IDS = (1, 2, 3)  # doom_env.spaces.ENTITY_TYPES: enemy_melee, enemy_hitscan, enemy_projectile

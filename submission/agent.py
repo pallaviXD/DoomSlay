@@ -46,6 +46,7 @@ class DoomAgent:
         # overhead per single-observation step, and it never touches the shared 2 GB VRAM budget.
         self.device = torch.device("cpu")
         self.net = M.SlayNet()
+        self.extra, self.temp = [], None  # optional ensemble members / per-head temperature (load_weights)
         self.sample = True  # stochastic policy (as trained); fixed seed keeps runs reproducible
         if WEIGHTS_PATH.is_file():
             ckpt = torch.load(WEIGHTS_PATH, map_location="cpu", weights_only=True)
@@ -63,17 +64,34 @@ class DoomAgent:
         """Accepts a checkpoint dict or a raw state dict; older nets without spatial memory warm-start."""
         M.load_compatible(self.net, ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt)
         # Policies trained with action masks must also run with them (flag saved by trainer/export).
-        if isinstance(ckpt, dict) and "model" in ckpt:
-            self.net.use_masks = int(ckpt.get("mask_level", 2 if ckpt.get("masks", False) else 0))
-        else:
-            self.net.use_masks = 0
+        is_ckpt = isinstance(ckpt, dict) and "model" in ckpt
+        level = int(ckpt.get("mask_level", 2 if ckpt.get("masks", False) else 0)) if is_ckpt else 0
+        self.net.use_masks = level
+        # Optional policy ENSEMBLE (expert-panel decision): extra trained networks whose per-head
+        # log-probabilities are averaged with the main net's. Each keeps its own GRU state; all share the
+        # spatial memory and the chosen action. Every action still comes from trained weights.
+        self.extra = []
+        for sd in (ckpt.get("ensemble", []) if is_ckpt else []):
+            net = M.SlayNet(use_masks=level)
+            M.load_compatible(net, sd)
+            net.eval()
+            self.extra.append(net)
+        # Optional per-head sampling temperature (6 values: move, strafe, turn, attack, use, next_weapon).
+        temp = ckpt.get("temperature") if is_ckpt else None
+        self.temp = None if temp is None else torch.tensor(
+            [t for t, n in zip(temp, M.HEAD_SIZES) for _ in range(n)], dtype=torch.float32).unsqueeze(0)
 
     def reset(self) -> None:
         """Before every map: clear GRU memory, the spatial-memory map and the previous-action input."""
         self.h = self.net.initial_state(1)
+        self.h_extra = [n.initial_state(1) for n in getattr(self, "extra", [])]
         self.prev = torch.zeros(1, M.PREV_ACT_DIM)
         self.memory.reset()
         self.prev_buttons = None  # None -> the next observation is the first of the map
+
+    @staticmethod
+    def _head_logprobs(logits: torch.Tensor) -> torch.Tensor:
+        return torch.cat([torch.log_softmax(lg, -1) for lg in M.split_logits(logits)], -1)
 
     @torch.no_grad()
     def act(self, observation: dict) -> np.ndarray:
@@ -82,6 +100,14 @@ class DoomAgent:
             p["egomap"] = self.memory.update(observation, self.prev_buttons)
             o = {k: torch.from_numpy(v).unsqueeze(0) for k, v in p.items()}
             logits, _, self.h = self.net.step(o, self.prev, self.h)
+            if self.extra or self.temp is not None:
+                lp = self._head_logprobs(logits)
+                for i, net in enumerate(self.extra):
+                    lg, _, self.h_extra[i] = net.step(o, self.prev, self.h_extra[i])
+                    lp = lp + self._head_logprobs(lg)
+                logits = lp / (1 + len(self.extra))  # mean log-probability per head (product of experts)
+                if self.temp is not None:
+                    logits = logits / self.temp
             a = M.sample_actions(logits, greedy=not self.sample, generator=self.gen)
             self.prev = M.actions_one_hot(a)
             buttons = M.actions_to_buttons(a.numpy())[0]

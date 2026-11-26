@@ -1,4 +1,4 @@
-"""Candidate selection: a checkpoint must beat the current submission on BOTH
+﻿"""Candidate selection: a checkpoint must beat the current submission on BOTH
   (a) the generated held-out set (8 maps x 12 seeds, tier-weighted approx score), and
   (b) the hand-made template map maps/two_rooms.wad (8 seeds, exit count),
 because a version that scored best on (a) failed (b) 0/8 (it never took the corridor to the exit room):
@@ -29,7 +29,7 @@ def assess(ckpt: str) -> dict:
     out = {"two_rooms_exits": two_exits}
     if two_exits < 4:  # fail fast: not worth 12-seed held-out time
         return out
-    held = evaluate(ckpt, load_heldout(DEFAULT_MANIFEST), seeds=SEEDS, processes=4)
+    held = evaluate(ckpt, load_heldout(DEFAULT_MANIFEST), seeds=SEEDS, processes=2)
     out.update(score=held["score"], exit_rate=held["exit_rate"], kills=held["kills"], deaths=held["deaths"],
                by_tier={k: round(v["exit_rate"], 2) for k, v in held["by_stage"].items()})
     return out
@@ -44,3 +44,4 @@ if __name__ == "__main__":
     r = assess(a.ckpt)
     ok = r["two_rooms_exits"] >= a.baseline_two_rooms and r.get("score", -1) > a.baseline_score
     print(json.dumps({"ckpt": Path(a.ckpt).name, **r, "PASS": ok}, default=float))
+
