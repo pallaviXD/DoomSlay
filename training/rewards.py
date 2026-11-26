@@ -21,6 +21,10 @@ REWARD_WEIGHTS = {
     # Added at 3.9M steps: dense aiming signal (kills alone are sparse). Mirrors damage_per_hp and is
     # bounded by each enemy's health. Engine DAMAGECOUNT, training only.
     "damage_dealt_per_hp": 0.01,
+    # Added at 5.0M steps: measured that the policy fired on ~40-50% of steps whether or not a monster
+    # was visible (shooting was free). A small cost per ammo unit spent makes misses cost and hits
+    # (damage_dealt) pay, so it should learn to fire only at monsters. One pistol bullet = -0.01.
+    "ammo_spent": -0.01,
     "new_cell": 0.05,  # first visit of a 64x64 grid cell (true position, training only)
     "pickup_when_low": 0.1,  # health gained while health < 50, or ammo gained while selected ammo < 10
     "damage_per_hp": -0.01,
@@ -142,6 +146,8 @@ class RewardShaper:
         ammo = float(np.sum(vitals[4:8]))
         if self._prev_ammo is not None and ammo > self._prev_ammo and vitals[3] < 10:
             r += self._add("pickup", w["pickup_when_low"])
+        if self._prev_ammo is not None and ammo < self._prev_ammo:  # ammo pools only shrink by firing
+            r += self._add("ammo_spent", w["ammo_spent"] * (self._prev_ammo - ammo))
         self._prev_ammo = ammo
 
         if progress:

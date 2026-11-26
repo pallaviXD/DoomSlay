@@ -203,3 +203,11 @@ def test_damage_dealt_reward():
     assert r == pytest.approx(REWARD_WEIGHTS["step"] + 20 * REWARD_WEIGHTS["damage_dealt_per_hp"])
     r, _ = sh.step(priv(tic=8, damage_dealt=20.0), vit())  # no new damage -> no reward
     assert r == pytest.approx(REWARD_WEIGHTS["step"])
+
+
+def test_ammo_spent_cost():
+    sh = RewardShaper()
+    sh.reset(priv(), {})
+    sh.step(priv(tic=4), vit(sel_ammo=50, ammo=(50, 0, 0, 0)))
+    r, _ = sh.step(priv(tic=8), vit(sel_ammo=48, ammo=(48, 0, 0, 0)))  # two bullets fired, no hit
+    assert r == pytest.approx(REWARD_WEIGHTS["step"] + 2 * REWARD_WEIGHTS["ammo_spent"])
