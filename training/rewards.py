@@ -24,7 +24,7 @@ REWARD_WEIGHTS = {
     # Added at 5.0M steps: measured that the policy fired on ~40-50% of steps whether or not a monster
     # was visible (shooting was free). A small cost per ammo unit spent makes misses cost and hits
     # (damage_dealt) pay, so it should learn to fire only at monsters. One pistol bullet = -0.01.
-    "ammo_spent": -0.01,
+    "ammo_spent": -0.02,  # raised from -0.01 at 13.7M steps (inspection: still firing ~55% regardless of monsters)
     # Added at 5.3M steps: inspection showed USE pressed ~50% of steps with or without a door ahead;
     # spamming USE on a moving door reverses it (CONTRACT §3). Tiny cost per press (rising edge).
     "use_press": -0.003,
@@ -34,7 +34,7 @@ REWARD_WEIGHTS = {
     # drift away costs the same, so the optimal policy is unchanged; it only makes aiming learnable.
     # Computed from the observation's entity list, in training only; the policy is still pure weights.
     "aim_potential": 0.3,
-    "fire_on_target": 0.02,  # ATTACK pressed while a monster is within ~6 deg of the crosshair
+    "fire_on_target": 0.08,  # ATTACK while a monster is within ~6 deg of the crosshair (0.02 -> 0.08 at 13.7M)
     # Exit efficiency, mirroring the evaluation's "small efficiency bonus for remaining health and time".
     "exit_time_bonus": 3.0,  # x fraction of the episode time left
     "exit_health_bonus": 2.0,  # x health/100 at the exit
