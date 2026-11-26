@@ -173,8 +173,8 @@ def main():
             recent.extend(finished)
 
             # ---- curriculum
+            old_stage = cur.stage  # read before record(), which may advance the stage
             if not a.smoke and cur.record(finished):
-                old_stage = cur.stage
                 pool = cur.build_pool()
                 venv.set_maps(pool)
                 print(f"[curriculum] new pool gen={cur.generation} stage={cur.stage} mixed={cur.mixed} (was {old_stage})", flush=True)
