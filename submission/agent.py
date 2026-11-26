@@ -18,6 +18,10 @@ SUBMISSION_DIR = Path(__file__).resolve().parent
 WEIGHTS_PATH = SUBMISSION_DIR / "weights.pt"
 
 
+if str(SUBMISSION_DIR) not in sys.path:
+    sys.path.insert(0, str(SUBMISSION_DIR))  # model.py imports its sibling slay_obs.py
+
+
 def _load_model_module():
     # Load submission/model.py under a unique name so it never collides with other "model" modules.
     spec = importlib.util.spec_from_file_location("slay_model", SUBMISSION_DIR / "model.py")
@@ -49,6 +53,7 @@ class DoomAgent:
             torch.manual_seed(0)  # untrained fallback (Phase 1 baseline); still a neural policy
         self.net.eval()
         self.gen = torch.Generator().manual_seed(1234)
+        self.failures = 0  # act() exceptions (eval.py reports this; must stay 0)
         self.reset()
 
     def reset(self) -> None:
@@ -62,14 +67,11 @@ class DoomAgent:
             p = M.pack_obs(observation)
             o = {k: torch.from_numpy(v).unsqueeze(0) for k, v in p.items()}
             logits, _, self.h = self.net.step(o, self.prev, self.h)
-            if self.sample:
-                heads = [torch.multinomial(torch.softmax(lg, -1), 1, generator=self.gen).squeeze(-1)
-                         for lg in M.split_logits(logits)]
-                a = torch.stack(heads, -1)
-            else:
-                a = M.sample_actions(logits, greedy=True)
+            a = M.sample_actions(logits, greedy=not self.sample, generator=self.gen)
             self.prev = M.actions_one_hot(a)
             return M.actions_to_buttons(a.numpy())[0]
         except Exception as exc:  # never crash the episode: stand still for this step
-            print(f"[DoomAgent] act() failed: {exc!r}", file=sys.stderr)
+            self.failures += 1
+            if self.failures <= 3:  # don't flood the scorer logs
+                print(f"[DoomAgent] act() failed: {exc!r}", file=sys.stderr)
             return SAFE_ACTION.copy()

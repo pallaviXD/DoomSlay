@@ -24,10 +24,14 @@ Why these choices (Q&A notes):
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+try:  # imported as a package module (training) or as a top-level file (agent adds submission/ to sys.path)
+    from .slay_obs import HEAD_SIZES, OBS_KEYS, actions_to_buttons, pack_obs  # noqa: F401
+except ImportError:
+    from slay_obs import HEAD_SIZES, OBS_KEYS, actions_to_buttons, pack_obs  # noqa: F401
 
 NUM_RAYS = 64
 NUM_HIT_TYPES = 6
@@ -36,47 +40,8 @@ ENT_FEATS = 5
 NUM_ENTITY_TYPES = 12
 NUM_VITALS = 17
 
-# Factored action heads: sizes of each categorical.
-HEAD_SIZES = (3, 3, 3, 2, 2, 2)  # move, strafe, turn, attack, use, next_weapon
 NUM_LOGITS = sum(HEAD_SIZES)
 PREV_ACT_DIM = NUM_LOGITS  # one-hot of the previous factored action
-
-# Head option -> button index (None = press nothing). Button order = doom_env.spaces.BUTTONS.
-_HEAD_BUTTONS = (
-    (None, 0, 1),  # move: none, MOVE_FORWARD, MOVE_BACKWARD
-    (None, 2, 3),  # strafe: none, MOVE_LEFT, MOVE_RIGHT
-    (None, 4, 5),  # turn: none, TURN_LEFT, TURN_RIGHT
-    (None, 6),  # ATTACK
-    (None, 7),  # USE
-    (None, 8),  # SELECT_NEXT_WEAPON
-)
-
-OBS_KEYS = ("ray_dist", "ray_type", "ent_feat", "ent_type", "ent_mask", "vitals")
-
-
-# ----------------------------------------------------------------------------- observation packing
-def pack_obs(obs: dict) -> dict[str, np.ndarray]:
-    """Contract observation dict -> flat dict of the arrays the network uses (pixels are not used)."""
-    rays, ents = obs["rays"], obs["visible_entities"]
-    return {
-        "ray_dist": np.asarray(rays["distance"], np.float32),
-        "ray_type": np.asarray(rays["hit_type"], np.int64),
-        "ent_feat": np.asarray(ents["features"], np.float32),
-        "ent_type": np.asarray(ents["entity_type"], np.int64),
-        "ent_mask": np.asarray(ents["mask"], np.float32),
-        "vitals": np.asarray(obs["vitals"], np.float32),
-    }
-
-
-def actions_to_buttons(head_actions: np.ndarray) -> np.ndarray:
-    """(..., 6) int head choices -> (..., 9) {0,1} buttons."""
-    head_actions = np.asarray(head_actions)
-    out = np.zeros(head_actions.shape[:-1] + (9,), np.int8)
-    for h, table in enumerate(_HEAD_BUTTONS):
-        for opt, btn in enumerate(table):
-            if btn is not None:
-                out[..., btn] |= (head_actions[..., h] == opt).astype(np.int8)
-    return out
 
 
 def actions_one_hot(head_actions: torch.Tensor) -> torch.Tensor:
@@ -101,7 +66,7 @@ class RayEncoder(nn.Module):
     def forward(self, dist: torch.Tensor, hit: torch.Tensor) -> torch.Tensor:
         # dist (N,64) in [0,1]; "near" emphasises close obstacles (collision / doorways).
         near = torch.exp(-dist * 8.0)
-        x = torch.cat([dist.unsqueeze(1), near.unsqueeze(1), F.one_hot(hit, NUM_HIT_TYPES).float().transpose(1, 2)], 1)
+        x = torch.cat([dist.unsqueeze(1), near.unsqueeze(1), F.one_hot(hit.long(), NUM_HIT_TYPES).float().transpose(1, 2)], 1)
         return self.fc(self.convs(x).flatten(1))
 
 
@@ -120,7 +85,7 @@ class EntityEncoder(nn.Module):
         f = feat.clone()
         f[..., 3:5] = torch.clamp(f[..., 3:5], -30.0, 30.0) / 10.0  # relative velocities
         near = torch.exp(-f[..., :1] * 4.0)
-        h = self.mlp(torch.cat([f, near, self.type_emb(etype)], -1))  # (N,32,H)
+        h = self.mlp(torch.cat([f, near, self.type_emb(etype.long())], -1))  # (N,32,H)
         valid = mask > 0.5
         logits = self.score(h).masked_fill(~valid.unsqueeze(-1), -1e9)  # (N,32,Q)
         w = torch.softmax(logits, dim=1) * valid.unsqueeze(-1).float()  # all-masked rows -> zeros
@@ -131,7 +96,7 @@ class EntityEncoder(nn.Module):
 
 
 def normalize_vitals(v: torch.Tensor) -> torch.Tensor:
-    """(N,17) raw vitals -> (N,30) roughly unit-scale features."""
+    """(N,17) raw vitals -> (N,VITALS_FEAT=26) roughly unit-scale features."""
     health = v[:, 0:1] / 100.0
     armor = v[:, 1:2] / 100.0
     weapon = F.one_hot(v[:, 2].long().clamp(0, 7), 8).float()
@@ -144,7 +109,7 @@ def normalize_vitals(v: torch.Tensor) -> torch.Tensor:
     return torch.cat([health, armor, weapon, sel_ammo, ammo, keys, vel, low_health, no_ammo], -1)
 
 
-VITALS_FEAT = 30
+VITALS_FEAT = 26  # 1 health + 1 armor + 8 weapon one-hot + 1 sel ammo + 4 ammo + 6 keys + 3 vel + 2 flags
 
 
 # ----------------------------------------------------------------------------- policy
@@ -199,19 +164,35 @@ def split_logits(logits: torch.Tensor):
     return torch.split(logits, HEAD_SIZES, dim=-1)
 
 
-def sample_actions(logits: torch.Tensor, greedy: bool = False) -> torch.Tensor:
-    outs = []
-    for lg in split_logits(logits):
-        outs.append(lg.argmax(-1) if greedy else torch.distributions.Categorical(logits=lg).sample())
-    return torch.stack(outs, -1)
+# All 6 heads are evaluated in one vectorised pass: the flat logits (…,15) are gathered into a padded
+# (…,6,3) tensor; 2-option heads get a -1e9 (never sampled) third option. Fewer tiny ops = faster CPU rollouts/agent.
+_PAD_IDX = []
+_off = 0
+for _n in HEAD_SIZES:
+    _PAD_IDX.append([_off + i if i < _n else NUM_LOGITS for i in range(3)])
+    _off += _n
+PAD_IDX = torch.tensor(_PAD_IDX)  # (6,3); index NUM_LOGITS = padding column
+PAD_MASK = PAD_IDX == NUM_LOGITS  # (6,3) True where padded
+
+
+def padded_logits(logits: torch.Tensor) -> torch.Tensor:
+    # Large finite negative, not -inf: 0 * -inf = NaN would poison gradients of the entropy term.
+    pad = torch.full(logits.shape[:-1] + (1,), -1e9, dtype=logits.dtype, device=logits.device)
+    return torch.cat([logits, pad], -1)[..., PAD_IDX.to(logits.device)]  # (...,6,3)
+
+
+def sample_actions(logits: torch.Tensor, greedy: bool = False, generator: torch.Generator | None = None) -> torch.Tensor:
+    """(…,15) logits -> (…,6) head choices. Stochastic sampling uses the Gumbel-max trick."""
+    pl = padded_logits(logits)
+    if not greedy:
+        u = torch.rand(pl.shape, generator=generator, device=pl.device).clamp_(1e-9, 1.0 - 1e-9)
+        pl = pl - torch.log(-torch.log(u))
+    return pl.argmax(-1)
 
 
 def log_prob_entropy(logits: torch.Tensor, actions: torch.Tensor):
     """Joint log-prob (sum over independent heads) and joint entropy."""
-    lp = 0.0
-    ent = 0.0
-    for h, lg in enumerate(split_logits(logits)):
-        logp = F.log_softmax(lg, -1)
-        lp = lp + logp.gather(-1, actions[..., h : h + 1]).squeeze(-1)
-        ent = ent - (logp.exp() * logp).sum(-1)
-    return lp, ent
+    logp = F.log_softmax(padded_logits(logits), -1)  # (...,6,3), -inf at padding
+    lp = logp.gather(-1, actions.unsqueeze(-1)).squeeze(-1).sum(-1)
+    plogp = torch.where(PAD_MASK.to(logp.device), torch.zeros_like(logp), logp.exp() * logp)
+    return lp, -plogp.sum((-1, -2))
