@@ -56,6 +56,7 @@ def parse():
     ap.add_argument("--ckpt-every", type=int, default=25)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--lr-final", type=float, default=1e-4)
+    ap.add_argument("--lr-horizon", type=float, default=40e6, help="global step count at which lr reaches --lr-final")
     ap.add_argument("--ent-coef", type=float, default=0.01)
     ap.add_argument("--stuck-ticks", type=int, default=200)
     ap.add_argument("--seed", type=int, default=0)
@@ -165,7 +166,10 @@ def main():
     try:
         while update < start_update + total_updates:
             update += 1
-            lr = ppo.set_lr((update - start_update) / max(total_updates, 1))
+            # LR follows GLOBAL progress (steps_done / --lr-horizon), not progress since this (re)start.
+            # Bug found at 30M steps: the schedule restarted at the maximum LR on every resume (~20 restarts),
+            # causing large policy jumps and regressions right after restarts.
+            lr = ppo.set_lr(steps_done / max(a.lr_horizon, 1.0))
             for g in G:
                 g["buf"].clear(net.hidden)
             t_roll = time.time()
@@ -234,7 +238,9 @@ def main():
             if heldout and update % a.eval_every == 0:
                 save(ck_dir / "eval_tmp.pt", net, ppo, extra)
                 t_ev = time.time()
-                res = evaluate(str(ck_dir / "eval_tmp.pt"), heldout, seeds=(11,))
+                # 3 seeds (24 episodes) instead of 1 (8): single-seed evals swing by +-17 points, which made
+                # normal noise look like regressions and made best.pt the luckiest checkpoint, not the best.
+                res = evaluate(str(ck_dir / "eval_tmp.pt"), heldout, seeds=(11, 22, 33))
                 for k in ("score", "exit_rate", "keys", "doors", "kills", "cells", "deaths", "agent_ms"):
                     tb.add_scalar(f"heldout/{k}", res[k], steps_done)
                 for st, v in res["by_stage"].items():
