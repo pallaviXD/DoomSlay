@@ -330,3 +330,31 @@ def test_fire_on_target_rewards_taps_not_holding():
     aim = w["aim_potential"] * (0.99 * 0.999 - 0.999)
     assert r1 == pytest.approx(w["step"] + w["fire_on_target"] + aim)
     assert r2 == pytest.approx(w["step"] + aim)
+
+
+# ----------------------------------------------------------------------------- action masks
+def test_action_masks():
+    from submission.model import FIRE_IDX, USE_IDX, apply_action_mask
+    n = 4
+    o = fake_obs(n)
+    o["ent_mask"][:] = 0
+    o["ray_dist"][:] = 1.0  # nothing near
+    o["ray_type"][:] = 0
+    prev = torch.zeros(n, PREV_ACT_DIM)
+    logits = torch.zeros(n, NUM_LOGITS)
+    m = apply_action_mask(logits, o, prev)
+    assert (m[:, FIRE_IDX] < -1e8).all() and (m[:, USE_IDX] < -1e8).all()  # no monster, nothing in reach
+    o["ent_mask"][0, 0] = 1
+    o["ent_type"][0, 0] = 2  # a hitscan enemy visible for env 0
+    o["ray_dist"][1, 0] = 0.03
+    o["ray_type"][1, 0] = 2  # door right ahead for env 1
+    prev[2, FIRE_IDX] = 1.0  # env 2 fired last step
+    o["ent_mask"][2, 0] = 1
+    o["ent_type"][2, 0] = 1
+    m = apply_action_mask(logits, o, prev)
+    assert m[0, FIRE_IDX] == 0 and m[1, USE_IDX] == 0  # allowed
+    assert m[2, FIRE_IDX] < -1e8  # tap-fire: not two steps in a row
+    acts = sample_actions(m)
+    assert acts[3, 3] == 0 and acts[3, 4] == 0  # masked options never sampled
+    lp, ent = log_prob_entropy(m, acts)
+    assert torch.isfinite(lp).all() and torch.isfinite(ent).all()

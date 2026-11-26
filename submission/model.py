@@ -43,6 +43,35 @@ NUM_VITALS = 17
 NUM_LOGITS = sum(HEAD_SIZES)
 PREV_ACT_DIM = NUM_LOGITS  # one-hot of the previous factored action
 
+# ----------------------------------------------------------------------------- action masking
+# "Action masking from observation fields" (allowed by docs/RULES.md; organisers prefer RL / RL-heuristic
+# hybrids). Masks only REMOVE clearly pointless options; the network still chooses every action:
+#  - ATTACK only when a monster is visible (entity list is already field-of-view + line-of-sight filtered),
+#    and not two steps in a row: holding pistol fire spreads shots, so the policy must tap-fire.
+#  - USE only when something is within use reach straight ahead (door, switch, wall: DOOM's use range is
+#    64 units); pressing in open space does nothing, and re-pressing a moving door reverses it.
+_HEAD_OFFSETS = [sum(HEAD_SIZES[:i]) for i in range(len(HEAD_SIZES))]
+FIRE_IDX = _HEAD_OFFSETS[3] + 1  # logit of "ATTACK pressed"
+USE_IDX = _HEAD_OFFSETS[4] + 1  # logit of "USE pressed"
+ENEMY_TYPE_IDS = (1, 2, 3)  # doom_env.spaces.ENTITY_TYPES: enemy_melee, enemy_hitscan, enemy_projectile
+USE_REACH = 80.0 / 1024.0  # ray distance units (64 use range + margin)
+_FRONT_RAYS = [-2, -1, 0, 1, 2]  # rays within about +-11 degrees of straight ahead
+
+
+def apply_action_mask(logits: torch.Tensor, o: dict[str, torch.Tensor], prev_act: torch.Tensor) -> torch.Tensor:
+    """logits (N,15); o tensors with leading N; prev_act (N,15) one-hot of the previous action."""
+    et = o["ent_type"].long()
+    enemy = ((o["ent_mask"] > 0.5) & (et >= ENEMY_TYPE_IDS[0]) & (et <= ENEMY_TYPE_IDS[-1])).any(-1)
+    fire_ok = enemy & (prev_act[:, FIRE_IDX] < 0.5)
+    front_d = o["ray_dist"][:, _FRONT_RAYS]
+    front_t = o["ray_type"][:, _FRONT_RAYS]
+    use_ok = ((front_d < USE_REACH) & (front_t > 0)).any(-1)
+    neg = torch.full_like(logits[:, 0], -1e9)
+    logits = logits.clone()
+    logits[:, FIRE_IDX] = torch.where(fire_ok, logits[:, FIRE_IDX], neg)
+    logits[:, USE_IDX] = torch.where(use_ok, logits[:, USE_IDX], neg)
+    return logits
+
 
 def actions_one_hot(head_actions: torch.Tensor) -> torch.Tensor:
     """(..., 6) long -> (..., NUM_LOGITS) float one-hot (used as previous-action input)."""
@@ -190,7 +219,7 @@ class SlayNet(nn.Module):
     def step(self, o, prev_act, h):
         """Single decision step. Returns (logits (N,15), value (N,), new h)."""
         h = self.gru(self.encode(o, prev_act), h)
-        return self.actor(h), self.critic(h).squeeze(-1), h
+        return apply_action_mask(self.actor(h), o, prev_act), self.critic(h).squeeze(-1), h
 
     def forward_sequence(self, o, prev_act, h0, starts):
         """Training: o tensors shaped (T,B,...), starts (T,B) = 1 where a new episode begins at t.
@@ -205,7 +234,8 @@ class SlayNet(nn.Module):
             h = self.gru(x[t], h)
             hs.append(h)
         hs = torch.stack(hs)  # (T,B,H)
-        return self.actor(hs), self.critic(hs).squeeze(-1)
+        logits = apply_action_mask(self.actor(hs).reshape(T * B, -1), flat, prev_act.reshape(T * B, -1))
+        return logits.reshape(T, B, -1), self.critic(hs).squeeze(-1)
 
 
 # ----------------------------------------------------------------------------- distributions
