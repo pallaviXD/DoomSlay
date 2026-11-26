@@ -50,7 +50,7 @@ def _run_map(args) -> list[dict]:
     agent = DoomAgent(env.observation_space, env.action_space, "cpu")
     if ckpt:
         sd = torch.load(ckpt, map_location="cpu", weights_only=True)
-        agent.net.load_state_dict(sd["model"] if "model" in sd else sd)
+        agent.load_weights(sd)
     out = []
     for seed in seeds:
         obs, _ = env.reset(seed=seed)

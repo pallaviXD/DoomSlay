@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from submission.model import PREV_ACT_DIM, SlayNet, actions_to_buttons  # noqa: E402
+from submission.model import PREV_ACT_DIM, SlayNet, actions_to_buttons, load_compatible  # noqa: E402
 from training.curriculum import Curriculum, load_heldout  # noqa: E402
 from training.envs import VecEnv, _fast_timer  # noqa: E402
 from training.eval import DEFAULT_MANIFEST, evaluate  # noqa: E402
@@ -91,9 +91,14 @@ def main():
     start_update, steps_done, best = 0, 0, -1e9
     if a.resume:
         ck = torch.load(a.resume, map_location=dev, weights_only=False)
-        net.load_state_dict(ck["model"])
+        fresh = load_compatible(net, ck["model"])  # warm start: new modules (spatial memory) start at zero
+        if fresh:
+            print(f"newly initialised (warm start): {fresh}")
         if a.resume_opt:
-            ppo.opt.load_state_dict(ck["opt"])
+            if fresh:
+                print("architecture changed: optimizer state not restored (fresh Adam moments)")
+            else:
+                ppo.opt.load_state_dict(ck["opt"])
             start_update, steps_done = ck.get("update", 0), ck.get("steps", 0)
             if "curriculum" in ck:
                 cur.load_state(ck["curriculum"])

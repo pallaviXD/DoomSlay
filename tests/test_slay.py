@@ -267,3 +267,53 @@ def test_exit_efficiency_bonus():
     sh.reset(priv(), {})
     r, _ = sh.step(priv(tic=1050, episode_ticks=2100, health=50.0, exit_reached=True, finished=True), vit())
     assert r == pytest.approx(w["step"] + w["exit"] + 0.5 * w["exit_time_bonus"] + 0.5 * w["exit_health_bonus"])
+
+
+# ----------------------------------------------------------------------------- spatial memory
+def mem_obs(dist=0.5, hit=1, vel=(0.0, 0.0)):
+    v = np.zeros(17, np.float32)
+    v[14], v[15] = vel
+    return {"rays": {"distance": np.full(64, dist, np.float32), "hit_type": np.full(64, hit, np.int64)}, "vitals": v}
+
+
+def test_spatial_memory_basics():
+    sys.path.insert(0, str(ROOT / "submission"))
+    from spatial_memory import CHANNELS, CROP, SpatialMemory
+    m = SpatialMemory()
+    c = m.update(mem_obs())
+    assert c.shape == (CHANNELS, CROP, CROP) and c.dtype == np.float32
+    mid = CROP // 2
+    assert c[0, mid, mid] > 0  # visited: the cell we stand in
+    assert c[1].sum() > 0 and c[2].sum() > 0  # free space and walls painted from the rays
+    turn = np.zeros(9, np.int8)
+    turn[4] = 1
+    m.update(mem_obs(), turn)
+    assert m.h == pytest.approx(np.radians(4 * 360 * 320 / 65536))  # slow keyboard turn for the first tics
+    fwd = np.zeros(9, np.int8)
+    fwd[0] = 1
+    x0 = m.x
+    m.update(mem_obs(vel=(8.0, 0.0)), fwd)
+    assert np.hypot(m.x - x0, m.y) > 30  # moved ~32 units along the heading
+    m.reset()
+    assert m.grid.sum() == 0 and m.x == 0 and m.h == 0
+    m2 = SpatialMemory()
+    assert np.array_equal(m2.update(mem_obs()), SpatialMemory().update(mem_obs()))  # deterministic
+
+
+def test_load_compatible_warm_start_is_exact():
+    from submission.model import load_compatible
+    torch.manual_seed(0)
+    a = SlayNet()
+    nmap = 64
+    with torch.no_grad():
+        a.fuse[0].weight[:, -nmap:] = 0.0  # what a warm-started net looks like
+    old = {k: v for k, v in a.state_dict().items() if not k.startswith("map.")}
+    old["fuse.0.weight"] = old["fuse.0.weight"][:, :-nmap].clone()  # pre-memory architecture
+    b = SlayNet()
+    fresh = load_compatible(b, old)
+    assert any(k.startswith("map.") for k in fresh) and "fuse.0.weight[map columns]" in fresh
+    o = fake_obs(3)
+    o["egomap"] = torch.rand(3, 5, 21, 21)
+    la, va, _ = a.step(o, torch.zeros(3, PREV_ACT_DIM), a.initial_state(3))
+    lb, vb, _ = b.step(o, torch.zeros(3, PREV_ACT_DIM), b.initial_state(3))
+    assert torch.allclose(la, lb, atol=1e-6) and torch.allclose(va, vb, atol=1e-6)

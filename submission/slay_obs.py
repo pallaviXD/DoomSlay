@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import numpy as np
 
-OBS_KEYS = ("ray_dist", "ray_type", "ent_feat", "ent_type", "ent_mask", "vitals")
+# "egomap" is not in the raw observation: the spatial-memory crop added by spatial_memory.SpatialMemory.
+OBS_KEYS = ("ray_dist", "ray_type", "ent_feat", "ent_type", "ent_mask", "vitals", "egomap")
 
 # Factored action heads: sizes of each categorical.
 HEAD_SIZES = (3, 3, 3, 2, 2, 2)  # move, strafe, turn, attack, use, next_weapon

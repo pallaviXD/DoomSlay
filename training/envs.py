@@ -29,10 +29,12 @@ sys.path.insert(0, str(ROOT / "submission"))
 sys.path.insert(0, str(ROOT))
 
 from slay_obs import OBS_KEYS, pack_obs  # noqa: E402  (numpy-only: workers never import torch)
+from spatial_memory import SpatialMemory  # noqa: E402  (same mini-map the agent builds at evaluation)
 
 
-def _pack(obs) -> tuple:
+def _pack(obs, egomap) -> tuple:
     p = pack_obs(obs)
+    p["egomap"] = egomap
     return tuple(p[k] for k in OBS_KEYS)
 
 
@@ -64,6 +66,7 @@ def _worker(conn, wid: int, maps: list[dict], seed: int, episodes_per_map: int, 
 
     rng = np.random.default_rng(seed)
     shaper = RewardShaper(reward_weights, stuck_ticks=stuck_ticks)
+    memory = SpatialMemory()  # rebuilt every episode exactly as DoomAgent does (reset + update per step)
     env = None
     cur = None
     eps_on_map = 0
@@ -89,7 +92,8 @@ def _worker(conn, wid: int, maps: list[dict], seed: int, episodes_per_map: int, 
         # already-visited rooms is required and earns no new-cell progress).
         shaper.stuck_ticks = int(cur.get("stuck_ticks", stuck_ticks))
         shaper.reset(with_damage_dealt(env), env.mapinfo.door_sectors, obs["visible_entities"])
-        return obs
+        memory.reset()
+        return obs, memory.update(obs)
 
     t_engine = t_shape = t_idle = 0.0
     n_steps = 0
@@ -112,10 +116,12 @@ def _worker(conn, wid: int, maps: list[dict], seed: int, episodes_per_map: int, 
                 if done:
                     ep = shaper.stats.as_dict()
                     ep.update(stage=cur.get("stage", 0), wad=Path(cur["wad"]).name, timeout=bool(trunc))
-                    obs = new_episode()
-                conn.send((_pack(obs), r, done, ep))
+                    obs, egomap = new_episode()
+                else:
+                    egomap = memory.update(obs, data)
+                conn.send((_pack(obs, egomap), r, done, ep))
             elif cmd == "reset":
-                conn.send(_pack(new_episode()))
+                conn.send(_pack(*new_episode()))
             elif cmd == "stats":  # ms per step: engine, shaping+packing, idle (waiting for the learner)
                 k = max(n_steps, 1)
                 conn.send({"engine_ms": 1e3 * t_engine / k, "shape_ms": 1e3 * t_shape / k, "idle_ms": 1e3 * t_idle / k})

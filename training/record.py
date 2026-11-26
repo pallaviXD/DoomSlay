@@ -48,7 +48,7 @@ def main():
     agent = DoomAgent(env.observation_space, env.action_space, "cpu")
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu", weights_only=True)
-        agent.net.load_state_dict(sd["model"] if "model" in sd else sd)
+        agent.load_weights(sd)
     obs, _ = env.reset(seed=a.seed)
     agent.reset()
     frames, path = [], []

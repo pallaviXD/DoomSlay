@@ -32,6 +32,8 @@ def _load_model_module():
 
 
 M = _load_model_module()
+from spatial_memory import SpatialMemory  # noqa: E402  (sibling file, numpy only)
+
 SAFE_ACTION = np.zeros(9, dtype=np.int8)  # stand still: always a valid action
 
 
@@ -47,31 +49,42 @@ class DoomAgent:
         self.sample = True  # stochastic policy (as trained); fixed seed keeps runs reproducible
         if WEIGHTS_PATH.is_file():
             ckpt = torch.load(WEIGHTS_PATH, map_location="cpu", weights_only=True)
-            self.net.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
+            self.load_weights(ckpt)
             self.sample = bool(ckpt.get("sample", True)) if isinstance(ckpt, dict) else True
         else:
             torch.manual_seed(0)  # untrained fallback (Phase 1 baseline); still a neural policy
         self.net.eval()
         self.gen = torch.Generator().manual_seed(1234)
+        self.memory = SpatialMemory()  # self-built mini-map (see spatial_memory.py)
         self.failures = 0  # act() exceptions (eval.py reports this; must stay 0)
         self.reset()
 
+    def load_weights(self, ckpt) -> None:
+        """Accepts a checkpoint dict or a raw state dict; older nets without spatial memory warm-start."""
+        M.load_compatible(self.net, ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt)
+
     def reset(self) -> None:
-        """Before every map: clear GRU memory and previous-action input."""
+        """Before every map: clear GRU memory, the spatial-memory map and the previous-action input."""
         self.h = self.net.initial_state(1)
         self.prev = torch.zeros(1, M.PREV_ACT_DIM)
+        self.memory.reset()
+        self.prev_buttons = None  # None -> the next observation is the first of the map
 
     @torch.no_grad()
     def act(self, observation: dict) -> np.ndarray:
         try:
             p = M.pack_obs(observation)
+            p["egomap"] = self.memory.update(observation, self.prev_buttons)
             o = {k: torch.from_numpy(v).unsqueeze(0) for k, v in p.items()}
             logits, _, self.h = self.net.step(o, self.prev, self.h)
             a = M.sample_actions(logits, greedy=not self.sample, generator=self.gen)
             self.prev = M.actions_one_hot(a)
-            return M.actions_to_buttons(a.numpy())[0]
+            buttons = M.actions_to_buttons(a.numpy())[0]
+            self.prev_buttons = buttons
+            return buttons
         except Exception as exc:  # never crash the episode: stand still for this step
             self.failures += 1
             if self.failures <= 3:  # don't flood the scorer logs
                 print(f"[DoomAgent] act() failed: {exc!r}", file=sys.stderr)
+            self.prev_buttons = SAFE_ACTION
             return SAFE_ACTION.copy()

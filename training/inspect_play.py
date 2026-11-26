@@ -117,7 +117,7 @@ def main():
         name = Path(m["wad"]).stem
         env = make_env(m["wad"], m["map"], episode_ticks=m["ticks"], render_buffers=True)
         agent = DoomAgent(env.observation_space, env.action_space, "cpu")
-        agent.net.load_state_dict(sd["model"] if "model" in sd else sd)
+        agent.load_weights(sd)
         rec, frames, outcome, p, steps = play(env, agent, a.seed, keep_frames_every=2)
         recs.append(rec)
         # top-down path with events

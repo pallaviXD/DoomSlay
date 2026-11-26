@@ -110,6 +110,50 @@ def normalize_vitals(v: torch.Tensor) -> torch.Tensor:
 
 
 VITALS_FEAT = 26  # 1 health + 1 armor + 8 weapon one-hot + 1 sel ammo + 4 ammo + 6 keys + 3 vel + 2 flags
+MAP_FEAT = 64
+MAP_CHANNELS, MAP_CROP = 5, 21  # submission/spatial_memory.py: visited, free, wall, door, locked door
+
+
+class MapEncoder(nn.Module):
+    """Tiny CNN over the ego-centric spatial-memory crop (5 x 21 x 21, 64 units per cell, up = facing).
+    Lets the policy see where it has been and where doors / locked doors were, beyond the current view."""
+
+    def __init__(self, out_dim: int = MAP_FEAT):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(MAP_CHANNELS, 16, 3, stride=2, padding=1), nn.ReLU(),  # 21 -> 11
+            nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),  # 11 -> 6
+            nn.Flatten(), nn.Linear(32 * 6 * 6, out_dim), nn.ReLU(),
+        )
+
+    def forward(self, m: torch.Tensor) -> torch.Tensor:
+        return self.net(m)
+
+
+def load_compatible(net: "SlayNet", sd: dict) -> list[str]:
+    """Load a state dict from an older SlayNet (no spatial memory) into the current one.
+
+    Warm start: the fusion layer gained MAP_FEAT input columns; old columns are copied and the new ones
+    are zero, so the loaded network computes exactly what it computed before, and training then learns
+    how much to use the map. Returns the names of parameters that were newly initialised."""
+    own = net.state_dict()
+    fresh = []
+    for k, v in own.items():
+        if k not in sd:
+            fresh.append(k)
+            continue
+        src = sd[k]
+        if src.shape == v.shape:
+            own[k] = src
+        elif k == "fuse.0.weight" and src.shape[0] == v.shape[0] and src.shape[1] < v.shape[1]:
+            w = torch.zeros_like(v)
+            w[:, : src.shape[1]] = src
+            own[k] = w
+            fresh.append(k + "[map columns]")
+        else:
+            raise ValueError(f"incompatible parameter {k}: {tuple(src.shape)} vs {tuple(v.shape)}")
+    net.load_state_dict(own)
+    return fresh
 
 
 # ----------------------------------------------------------------------------- policy
@@ -120,7 +164,8 @@ class SlayNet(nn.Module):
         self.rays = RayEncoder(256)
         self.ents = EntityEncoder()
         self.vit = nn.Sequential(nn.Linear(VITALS_FEAT + PREV_ACT_DIM, 64), nn.ReLU())
-        self.fuse = nn.Sequential(nn.Linear(256 + self.ents.out_dim + 64, hidden), nn.ReLU())
+        self.map = MapEncoder(MAP_FEAT)
+        self.fuse = nn.Sequential(nn.Linear(256 + self.ents.out_dim + 64 + MAP_FEAT, hidden), nn.ReLU())
         self.gru = nn.GRUCell(hidden, hidden)
         self.actor = nn.Sequential(nn.Linear(hidden, 128), nn.ReLU(), nn.Linear(128, NUM_LOGITS))
         self.critic = nn.Sequential(nn.Linear(hidden, 128), nn.ReLU(), nn.Linear(128, 1))
@@ -136,7 +181,11 @@ class SlayNet(nn.Module):
         r = self.rays(o["ray_dist"], o["ray_type"])
         e = self.ents(o["ent_feat"], o["ent_type"], o["ent_mask"])
         v = self.vit(torch.cat([normalize_vitals(o["vitals"]), prev_act], -1))
-        return self.fuse(torch.cat([r, e, v], -1))
+        if "egomap" in o:
+            m = self.map(o["egomap"])
+        else:  # observation packed without spatial memory (old tools): neutral input
+            m = torch.zeros(r.shape[0], MAP_FEAT, device=r.device, dtype=r.dtype)
+        return self.fuse(torch.cat([r, e, v, m], -1))
 
     def step(self, o, prev_act, h):
         """Single decision step. Returns (logits (N,15), value (N,), new h)."""
