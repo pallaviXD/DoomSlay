@@ -200,13 +200,15 @@ def build(log_paths: list[Path], fair_spec, out: Path) -> None:
         "and health bonus), keycard +3, door +2 (+4 locked), kill +1, damage dealt +0.01/HP, ammo spent −0.02, "
         "<b>potential-based aim shaping</b> (0.3·cos to the nearest visible monster, policy-invariant), a "
         "<b>count-based intrinsic curiosity</b> bonus (+0.05 per new 64-unit cell), damage taken −0.01/HP, death −3, "
-        "stuck −1 with cut-off. <b>Action masking</b> from observation fields: fire only with a visible monster and "
-        "tap-fire (holding pistol fire spreads shots), USE only within reach. <b>Recurrent PPO "
+        "stuck −1 with cut-off. <b>Action masking</b> from observation fields (fire only with a visible monster, "
+        "tap-fire, USE only within reach) is implemented and stored per checkpoint; it removed all wasted shots in "
+        "replays, but the submitted checkpoint, chosen by a 12-seed test, was trained and runs without masks. "
+        "<b>Recurrent PPO "
         "(ours):</b> GAE(0.99, 0.95), clip 0.2, clipped value loss, 4 epochs, 128-step rollouts × 64 envs, 32-step "
         "truncated BPTT, entropy 0.01, lr 3e-4 → 1e-4; a CPU actor runs rollouts and the GPU learns. Checkpoints "
         "are chosen by <b>held-out</b> score, confirmed by a 6-seed test and by watching replays.")]
     st += [P("Held-out results", h2), Image(curve_figure(log), width=180 * mm, height=50 * mm)]
-    rows = [["version (6 seeds x 8 held-out maps)", "approx score", "levels finished", "keys/map", "doors/map", "deaths/map"],
+    rows = [["version (6-12 seeds x 8 held-out maps)", "approx score", "levels finished", "keys/map", "doors/map", "deaths/map"],
             ["untrained network", "8.6", "0%", "0.00", "0.00", "0.62"]]
     for label, r in fair_rows:
         rows.append([label, f"{r['score']:.1f}", f"{100 * r['exit_rate']:.0f}%", f"{r['keys']:.2f}",
@@ -217,7 +219,7 @@ def build(log_paths: list[Path], fair_spec, out: Path) -> None:
                            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)]))
     st += [t, Spacer(1, 3), P(
         "Held-out = 8 generated maps (2 per tier) from a reserved seed range, played through the real DoomAgent "
-        "interface, 6 seeds each. The approximate score uses our own guess at the hidden weights (exit 50 + efficiency, "
+        "interface, 6 seeds each (12 for the final). The approximate score uses our own guess at the hidden weights (exit 50 + efficiency, "
         "key 8, door 4, exploration ≤ 15, kills ≤ 10, death −5), weighted by tier. " + tier_text +
         " Per-step latency is about 2 ms against the 40 ms budget. We also inspect every candidate by replay "
         "(videos, top-down paths, behaviour statistics such as 'fires when a monster is visible' vs 'not visible').")]
@@ -240,8 +242,9 @@ FAIR_SPEC = [  # (label, [(comparison json, checkpoint key), ...]) averaged; see
     ("+ hit/ammo/door rewards, update 2050 (6.3 M)", [(ROOT / "docs" / "compare.json", "snap_1822"),
                                                         (ROOT / "docs" / "compare2.json", "snap_1822")]),
     ("+ spatial memory, real levels, update 2800", [(ROOT / "docs" / "compare_mem2800.json", "best_upd2800")]),
-    ("+ stronger aim shaping, update 3000 (14.4 M)", [(ROOT / "docs" / "compare_mem3000.json", "best_upd3000")]),
-    ("final submission", [(ROOT / "docs" / "results_final.json", "final")]),
+    ("+ masks (trained with them), update 4160", [(ROOT / "docs" / "compare_final_masked.json", "cand_mask4160"),
+                                                   (ROOT / "docs" / "tb_m4160.json", "cand_mask4160")]),
+    ("FINAL: + aim shaping, update 3000 (12 seeds)", [(ROOT / "docs" / "results_final.json", "final")]),
 ]
 
 if __name__ == "__main__":

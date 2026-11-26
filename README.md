@@ -81,7 +81,7 @@ spatial memory: self-built map, 5 x 21 x 21 ---- CNN x2 ------------------------
 | **Spatial memory** ([submission/spatial_memory.py](submission/spatial_memory.py)) | The agent draws its own occupancy map in a dead-reckoned frame. Heading comes from its own TURN presses (DOOM's keyboard turn rate is deterministic: 1.76°/tic for the first 5 tics, then 3.52°/tic) and translation from the vitals velocity; the rays paint free space, walls, doors and locked doors. A 5×21×21 crop, rotated so "up" is the facing direction, goes through a small CNN. No global coordinates are used. It was added by **warm start**: the new fusion weights start at zero, so a trained policy is unchanged at first (unit-tested exactly). |
 | **GRU memory (256)** | Short-term memory across steps; reset in `reset()` and at every episode boundary in training. |
 | **Factored action heads** | The 9 buttons become 6 categoricals (move, strafe, turn, attack, use, next weapon): no contradictory presses, and the previous action is an input so the policy can learn `USE`'s button-down behaviour. |
-| **Action masks** (from observation fields, allowed by the rules) | ATTACK only when a monster is visible and not two steps in a row (holding pistol fire spreads shots); USE only when something is within reach ahead. The network still makes every decision; masks only remove pointless options. They are stored per checkpoint (`masks`) because they are part of how a policy was trained. |
+| **Action masks** (from observation fields, allowed by the rules) | ATTACK only when a monster is visible and not two steps in a row (holding pistol fire spreads shots); USE only when something is within reach ahead. The network still makes every decision; masks only remove pointless options. They are stored per checkpoint (`masks`) because they are part of how a policy was trained. The submitted checkpoint was trained without masks, so it runs without them. |
 | **1.0 M parameters, CPU inference** | About 2–4 ms per `act()` on 1 thread, well inside the 40 ms budget; no VRAM used. |
 
 ## Training pipeline
@@ -132,7 +132,31 @@ spatial memory: self-built map, 5 x 21 x 21 ---- CNN x2 ------------------------
 
 ## Results
 
-RESULTS_PLACEHOLDER
+Held-out test: 8 generated maps (2 per tier) from a reserved seed range, never trained on, played through
+the real `DoomAgent` interface ([training/compare.py](training/compare.py)). The approximate score uses our
+own guess at the hidden weights, weighted by tier. Raw results are in `docs/compare*.json` and
+`docs/results_final.json`.
+
+| Version | Seeds | Approx score | Levels finished | Deaths / map |
+|---|---|---|---|---|
+| Untrained network | 1 | 8.6 | 0% | 0.62 |
+| Baseline curriculum, update 1800 (5.5 M steps) | 6 | 44.0 | 50% | 0.42 |
+| + hit / ammo / door rewards, update 2050 | 6 | 47.6 | 48% | 0.23 |
+| + spatial memory + real levels, update 2800 | 6 | 46.4 | 54% | 0.29 |
+| + masks (trained with them), update 4160 | 12 | 48.4 | 60% | 0.23 |
+| **Final submission: + aim shaping, update 3000 (14.4 M steps)** | **12** | **52.3** | **56%** | **0.22** |
+
+Final submission per tier (levels finished): **combat 100%, multi-room 62%, keycard → locked door 46%,
+gauntlet 17%**. Average decision time 1.9 ms (budget 40 ms); `validate.py` passes.
+
+The final checkpoint was chosen by a 12-seed comparison of the four best candidates (all within ~4 points):
+it is the only one that reliably finishes tier-4 (gauntlet) maps, which carry the most weight. The mask-trained
+version finishes slightly more easy and medium maps and wastes no shots in replays, but scored lower overall.
+On 4 real Freedoom levels with all monsters (much larger than an evaluation map), no version reaches the
+exit yet; the score there rose from 11.3 to 14.4 after adding real levels to training.
+
+Training: about 25 M environment steps on one laptop (RTX 5060 Laptop GPU, i7-14700HX), roughly 10 hours
+including all experiments.
 
 ## Known limitations
 
