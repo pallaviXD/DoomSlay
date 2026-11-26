@@ -103,7 +103,7 @@ def _worker(conn, wid: int, maps: list[dict], seed: int, episodes_per_map: int, 
                 obs, _, term, trunc, info = env.step(data)
                 t2 = time.perf_counter()
                 priv = with_damage_dealt(env)
-                r, stuck = shaper.step(priv, obs["vitals"])
+                r, stuck = shaper.step(priv, obs["vitals"], data)
                 t_engine += t2 - t1
                 t_shape += time.perf_counter() - t2
                 n_steps += 1

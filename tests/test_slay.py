@@ -211,3 +211,14 @@ def test_ammo_spent_cost():
     sh.step(priv(tic=4), vit(sel_ammo=50, ammo=(50, 0, 0, 0)))
     r, _ = sh.step(priv(tic=8), vit(sel_ammo=48, ammo=(48, 0, 0, 0)))  # two bullets fired, no hit
     assert r == pytest.approx(REWARD_WEIGHTS["step"] + 2 * REWARD_WEIGHTS["ammo_spent"])
+
+
+def test_use_press_cost_rising_edge():
+    sh = RewardShaper()
+    sh.reset(priv(), {})
+    use = np.zeros(9, np.int8)
+    use[7] = 1
+    r1, _ = sh.step(priv(tic=4), vit(), use)
+    r2, _ = sh.step(priv(tic=8), vit(), use)  # held: no new press
+    assert r1 == pytest.approx(REWARD_WEIGHTS["step"] + REWARD_WEIGHTS["use_press"])
+    assert r2 == pytest.approx(REWARD_WEIGHTS["step"])

@@ -25,6 +25,9 @@ REWARD_WEIGHTS = {
     # was visible (shooting was free). A small cost per ammo unit spent makes misses cost and hits
     # (damage_dealt) pay, so it should learn to fire only at monsters. One pistol bullet = -0.01.
     "ammo_spent": -0.01,
+    # Added at 5.3M steps: inspection showed USE pressed ~50% of steps with or without a door ahead;
+    # spamming USE on a moving door reverses it (CONTRACT §3). Tiny cost per press (rising edge).
+    "use_press": -0.003,
     "new_cell": 0.05,  # first visit of a 64x64 grid cell (true position, training only)
     "pickup_when_low": 0.1,  # health gained while health < 50, or ammo gained while selected ammo < 10
     "damage_per_hp": -0.01,
@@ -74,6 +77,7 @@ class RewardShaper:
         self.last_progress_tic = priv["tic"]
         self.stats = EpisodeStats(cells=1)
         self._prev_ammo = None
+        self._prev_use = 0
 
     def _cell(self, p) -> tuple[int, int]:
         return int(np.floor(p["x"] / CELL_SIZE)), int(np.floor(p["y"] / CELL_SIZE))
@@ -82,11 +86,17 @@ class RewardShaper:
         self.stats.parts[name] = self.stats.parts.get(name, 0.0) + value
         return value
 
-    def step(self, priv: dict, vitals: np.ndarray) -> tuple[float, bool]:
+    def step(self, priv: dict, vitals: np.ndarray, action=None) -> tuple[float, bool]:
         """priv: privileged_state() after the step. vitals: the observation's vitals.
+        action: the 9 buttons pressed (optional; used for the USE-press cost).
         Returns (shaped reward, stuck_cutoff)."""
         w, prev, s = self.w, self.prev, self.stats
         r = self._add("step", w["step"])
+        if action is not None:
+            use = int(action[7])
+            if use and not self._prev_use:  # rising edge = an actual press
+                r += self._add("use_press", w["use_press"])
+            self._prev_use = use
         progress = False
 
         if priv["exit_reached"]:
