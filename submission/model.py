@@ -54,7 +54,9 @@ _HEAD_OFFSETS = [sum(HEAD_SIZES[:i]) for i in range(len(HEAD_SIZES))]
 FIRE_IDX = _HEAD_OFFSETS[3] + 1  # logit of "ATTACK pressed"
 USE_IDX = _HEAD_OFFSETS[4] + 1  # logit of "USE pressed"
 NEXT_IDX = _HEAD_OFFSETS[5] + 1  # logit of "SELECT_NEXT_WEAPON pressed"
-# Mask levels (stored per checkpoint): 0 none; 1 weapon only; 2 weapon + fire + use.
+# Mask levels (stored per checkpoint): 0 none; 1 weapon only; 2 weapon + fire + use;
+# 3 = 2 with the trigger allowed only when a monster is near the crosshair (no shots into empty air).
+CROSSHAIR_COS = 0.985  # ~10 degrees
 # Weapon mask (found in replays: policies pressed NEXT_WEAPON on ~50-60% of steps and held the FIST ~45% of
 # the time, "punching air"): NEXT_WEAPON only while holding the fist/chainsaw (slot <= 1) with ammo left, so
 # the agent can get back to a gun; DOOM still auto-switches on weapon pickups and when ammo runs out.
@@ -74,7 +76,13 @@ def apply_action_mask(logits: torch.Tensor, o: dict[str, torch.Tensor], prev_act
     if level < 2:
         return logits
     et = o["ent_type"].long()
-    enemy = ((o["ent_mask"] > 0.5) & (et >= ENEMY_TYPE_IDS[0]) & (et <= ENEMY_TYPE_IDS[-1])).any(-1)
+    is_enemy = (o["ent_mask"] > 0.5) & (et >= ENEMY_TYPE_IDS[0]) & (et <= ENEMY_TYPE_IDS[-1])
+    if level >= 3:
+        # Level 3: the trigger only works with a monster near the crosshair (cos(rel angle) from the observation's
+        # entity features, |angle| < ~10 deg). The policy must turn to aim by itself; this never turns for it.
+        enemy = (is_enemy & (o["ent_feat"][..., 2] > CROSSHAIR_COS)).any(-1)
+    else:
+        enemy = is_enemy.any(-1)
     fire_ok = enemy & (prev_act[:, FIRE_IDX] < 0.5)
     front_d = o["ray_dist"][:, _FRONT_RAYS]
     front_t = o["ray_type"][:, _FRONT_RAYS]

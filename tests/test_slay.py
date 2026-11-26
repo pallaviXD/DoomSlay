@@ -373,3 +373,18 @@ def test_weapon_mask():
     assert m[0, NEXT_IDX] < -1e8  # never cycle away from a gun
     assert m[1, NEXT_IDX] == 0  # may switch back from the fist to a gun
     assert m[2, NEXT_IDX] < -1e8  # nothing to switch to
+
+
+def test_crosshair_fire_mask_level3():
+    from submission.model import FIRE_IDX, apply_action_mask
+    o = fake_obs(2)
+    o["ent_mask"][:] = 0
+    o["ent_mask"][:, 0] = 1
+    o["ent_type"][:, 0] = 2
+    o["ent_feat"][0, 0, 2] = 0.999  # monster almost dead ahead
+    o["ent_feat"][1, 0, 2] = 0.80  # monster visible but ~37 deg to the side
+    prev = torch.zeros(2, PREV_ACT_DIM)
+    m2 = apply_action_mask(torch.zeros(2, NUM_LOGITS), o, prev, level=2)
+    m3 = apply_action_mask(torch.zeros(2, NUM_LOGITS), o, prev, level=3)
+    assert m2[0, FIRE_IDX] == 0 and m2[1, FIRE_IDX] == 0  # level 2: any visible monster
+    assert m3[0, FIRE_IDX] == 0 and m3[1, FIRE_IDX] < -1e8  # level 3: only near the crosshair
