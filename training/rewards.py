@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 REWARD_WEIGHTS = {
-    "exit": 10.0,  # reaching the level exit (largest evaluation category)
+    "exit": 15.0,  # reaching the level exit (largest evaluation category); 10 -> 15 at 26M steps after kill x2 made it linger
     "keycard": 3.0,  # first pickup of each key
     "door_open": 2.0,  # a door sector opened for the first time (doubles as "unlock" for locked doors)
     # Raised 1 -> 4 at 3.9M steps: agents picked up keys but rarely went back to the locked door.
