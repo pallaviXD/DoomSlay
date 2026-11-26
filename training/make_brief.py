@@ -42,7 +42,7 @@ def fig_bytes(fig) -> io.BytesIO:
 def architecture_figure() -> io.BytesIO:
     fig, ax = plt.subplots(figsize=(7.6, 2.9))
     ax.set_xlim(0, 100)
-    ax.set_ylim(0, 40)
+    ax.set_ylim(0, 42)
     ax.axis("off")
 
     def box(x, y, w, h, text, fc=SOFT, ec=INK, bold=False):
@@ -54,12 +54,13 @@ def architecture_figure() -> io.BytesIO:
         ax.add_patch(FancyArrowPatch((x1, y1), (x2, y2), arrowstyle="-|>", mutation_scale=8, lw=0.9, color=INK))
 
     rows = [
-        (31, "rays\n64 x [dist, near, 6 hit types]", "circular Conv1d x3\n-> 256"),
-        (18, "visible entities\n<=32 x [5 feats + type emb]", "entity MLP + masked\nattention pool -> 193"),
-        (5, "vitals (26, normalised)\n+ previous action (15)", "MLP -> 64"),
+        (32, "rays\n64 x [dist, near, 6 hit types]", "circular Conv1d x3\n-> 256"),
+        (22, "visible entities\n<=32 x [5 feats + type emb]", "entity MLP + masked\nattention pool -> 193"),
+        (12, "vitals (26, normalised)\n+ previous action (15)", "MLP -> 64"),
+        (2, "spatial memory\n(self-built map, 5x21x21)", "CNN x2 -> 64"),
     ]
     for y, inp, enc in rows:
-        box(1, y, 25, 7.5, inp)
+        box(1, y, 25, 7.5, inp, fc="#fee2e2" if y == 2 else SOFT, ec=ACCENT if y == 2 else INK, bold=y == 2)
         box(31, y, 21, 7.5, enc)
         arrow(26.6, y + 3.75, 30.4, y + 3.75)
         arrow(52.6, y + 3.75, 57.4, 21.5)
@@ -72,7 +73,7 @@ def architecture_figure() -> io.BytesIO:
     box(87, 8, 12.5, 7, "critic\nV(s)")
     arrow(83.6, 23, 86.4, 28)
     arrow(83.6, 20, 86.4, 12)
-    ax.text(50, 39, "SlayNet (0.9 M params, ~2 ms / act on 1 CPU thread)", ha="center", fontsize=8, color=ACCENT,
+    ax.text(50, 40.5, "SlayNet (1.0 M params, ~2 ms / act on 1 CPU thread)", ha="center", fontsize=8, color=ACCENT,
             fontweight="bold")
     return fig_bytes(fig)
 
@@ -80,7 +81,11 @@ def architecture_figure() -> io.BytesIO:
 def curve_figure(log: list[dict]) -> io.BytesIO:
     fig, ax1 = plt.subplots(figsize=(7.6, 2.3))
     steps = [r["steps"] / 1e6 for r in log]
-    ax1.plot(steps, [r["score"] for r in log], color=ACCENT, lw=1.6, label="held-out approx score")
+    scores = [r["score"] for r in log]
+    ax1.plot(steps, scores, color=ACCENT, lw=0.8, alpha=0.35)
+    k = 5  # rolling mean over 5 evaluations: single held-out evals swing by about +-8 points
+    smooth = [sum(scores[max(0, i - k + 1): i + 1]) / len(scores[max(0, i - k + 1): i + 1]) for i in range(len(scores))]
+    ax1.plot(steps, smooth, color=ACCENT, lw=1.8, label="held-out approx score (rolling mean of 5)")
     ax1.set_xlabel("environment steps (millions)", fontsize=7)
     ax1.set_ylabel("approx score", fontsize=7, color=ACCENT)
     ax1.tick_params(labelsize=6.5)
@@ -100,10 +105,46 @@ def curve_figure(log: list[dict]) -> io.BytesIO:
 
 
 # ----------------------------------------------------------------------------- document
-def build(log_path: Path, final_path: Path | None, out: Path) -> None:
-    log = [json.loads(l) for l in log_path.read_text().splitlines() if l.strip()]
-    final = json.loads(final_path.read_text()) if final_path and final_path.is_file() else None
-    best = max(log, key=lambda r: r["score"])
+def load_logs(paths: list[Path]) -> list[dict]:
+    """Held-out logs of consecutive runs (cur1 -> aim1 -> mem1), merged and ordered by environment steps."""
+    rows = {}
+    for p in paths:
+        if p.is_file():
+            for line in p.read_text().splitlines():
+                if line.strip():
+                    r = json.loads(line)
+                    rows[r["steps"]] = r  # a resumed run may repeat a step count: keep the latest
+    return [rows[k] for k in sorted(rows)]
+
+
+def load_fair(spec: list[tuple[str, list[tuple[Path, str]]]]) -> list[tuple[str, dict]]:
+    """Average multi-seed comparison results (training/compare.py outputs) per version."""
+    out = []
+    for label, parts in spec:
+        rs = []
+        for path, key in parts:
+            if path.is_file():
+                d = json.loads(path.read_text())
+                if key in d:
+                    rs.append(d[key])
+        if rs:
+            avg = {k: sum(r[k] for r in rs) / len(rs) for k in ("score", "exit_rate", "keys", "doors", "deaths")}
+            avg["by_stage"] = rs[-1].get("by_stage", {})
+            out.append((label, avg))
+    return out
+
+
+def build(log_paths: list[Path], fair_spec, out: Path) -> None:
+    log = load_logs(log_paths)
+    fair = load_fair(fair_spec)
+    globals()["fair_rows"] = fair
+    last = fair[-1][1] if fair else None
+    tier_text = ""
+    if last and last.get("by_stage"):
+        names = {"1": "combat", "2": "multi-room", "3": "keycard", "4": "gauntlet"}
+        tier_text = "Final version, levels finished per tier: " + ", ".join(
+            f"{names.get(str(k), k)} {100 * v['exit_rate']:.0f}%" for k, v in sorted(last["by_stage"].items())) + "."
+    globals()["tier_text"] = tier_text
 
     ss = getSampleStyleSheet()
     body = ParagraphStyle("b", parent=ss["Normal"], fontSize=8.4, leading=10.6, spaceAfter=3)
@@ -117,11 +158,13 @@ def build(log_path: Path, final_path: Path | None, out: Path) -> None:
     st += [P("Team Slay: a recurrent PPO agent that plays unseen DOOM maps", h1),
            P("Yugaantar 2026 · DevForge Track 1 \"Can It Play DOOM?\" · github.com/pallaviXD/DoomSlay", sub)]
     st += [P("USP", h2), P(
-        "A compact (0.9 M parameter) policy that sees the world like a bat, not a camera: 64 ego-centric rays, "
-        "a variable-size set of visible entities and vitals. It is trained from scratch with <b>our own recurrent "
-        "PPO</b> on <b>an endless stream of procedurally generated maps</b> (combat, multi-room exploration, "
-        "keycard → locked door → exit, gauntlet), so it can only score by learning <i>transferable behaviour</i>, "
-        "never by memorising layouts. Every action comes from network weights; there are no rules, planners or aimbots.")]
+        "A compact (1.0 M parameter) policy that sees the world like a bat, not a camera: 64 ego-centric rays, "
+        "a variable-size set of visible entities, vitals, and a <b>map it draws itself</b> from what it has seen "
+        "(dead-reckoned spatial memory). It is trained from scratch with <b>our own recurrent PPO</b> on an endless "
+        "stream of <b>procedurally generated maps</b> (combat, exploration, keycard → locked door → exit, gauntlet; "
+        "with exit switches and stairs) mixed with <b>real hand-made Freedoom levels</b>, so it can only score by "
+        "learning <i>transferable behaviour</i>, never by memorising layouts. Every action comes from network "
+        "weights; there are no rules, planners or aimbots.")]
     st += [P("Architecture", h2), Image(architecture_figure(), width=180 * mm, height=68 * mm)]
     st += [P("Variable-entity handling", h2), P(
         "Between 0 and 32 entities are visible. Each one (distance, sin/cos of relative angle, relative velocity, "
@@ -135,56 +178,73 @@ def build(log_path: Path, final_path: Path | None, out: Path) -> None:
         "<b>circular</b> 1-D convolution: the 360° ring wraps, and weights shared over heading make a doorway look "
         "the same at any angle. The previous action is an input, so the policy can learn the button-down behaviour "
         "of USE. In training the GRU is reset at every episode boundary, and PPO replays 32-step sequences from the "
-        "stored hidden state (truncated BPTT). <i>Stretch goal not done:</i> an egocentric grid memory "
-        "shifted by dead-reckoned motion.")]
+        "stored hidden state (truncated BPTT). On top of the GRU, an <b>explicit spatial memory</b> "
+        "(submission/spatial_memory.py) draws a 160×160 occupancy map (64 units per cell) in a dead-reckoned frame: "
+        "heading from the agent's own TURN presses (DOOM's keyboard turn rate is deterministic: 1.76°/tic for the "
+        "first 5 tics, then 3.52°/tic), translation from the vitals velocity, and the 64 rays paint free space, walls, "
+        "doors and locked doors. Each step a 5×21×21 crop, rotated so 'up' is the facing direction, goes through a "
+        "small CNN into the fusion layer. It answers 'have I been here?' and 'where was that locked door?' without "
+        "any global coordinates. It was added to a trained network by <b>warm start</b>: new fusion columns start "
+        "at zero, so behaviour is unchanged at first (unit-tested exactly), and PPO then learns to use the map.")]
 
     st.append(PageBreak())
     st += [P("Training and exploration pipeline", h2), P(
         "<b>Maps:</b> a grid-based UDMF generator (training/mapgen.py) builds a spanning-tree room graph with extra "
-        "loops, 2-cell corridors, doors, enemies, health and ammo, and an exit pad. In stage 3/4 the locked door sits on "
-        "a bridge of the room graph and its keycard is in a side branch. A scripted solvability check reached the exit on "
-        "100/100 maps. <b>Curriculum:</b> stage 1 (1–2 rooms, weak enemies) → 2 (4–8 rooms, exit in the farthest "
-        "room) → 3 (key/lock) → mixed, advancing on rolling exit rate, with 25% replay of earlier stages and a "
-        "fresh map pool every 1,500 episodes. <b>Reward</b> (training only, uses privileged position): exit +10, "
-        "keycard +3, door +2 (+1 locked), kill +1, new 64-unit cell +0.05, pickup when low +0.1, damage −0.01/HP, "
-        "death −3, step −0.001, and stuck (no progress for 200 tics) −1 with episode cut-off. <b>PPO:</b> GAE(0.99, "
-        "0.95), clip 0.2 with clipped value loss, 4 epochs, 128-step rollouts × 24 envs, entropy 0.01, grad clip 0.5, "
-        "lr 3e-4 → 1e-4. 24 spawn workers; a CPU actor does rollouts and the GPU learns, with two env halves "
-        "pipelined. The best checkpoint is chosen by <b>held-out</b> score, not by recency.")]
-    st += [P("Held-out results", h2), Image(curve_figure(log), width=180 * mm, height=55 * mm)]
-    rows = [["checkpoint", "approx score", "exit rate", "keys/map", "doors/map", "cells", "deaths"],
-            ["untrained", "8.6", "0.00", "0.00", "0.00", "42", "0.62"]]
-    pick = [r for r in log if r["update"] in (100, 300)] + [best]
-    for r in pick:
-        rows.append([f"update {r['update']} ({r['steps'] / 1e6:.1f}M)", f"{r['score']:.1f}", f"{r['exit_rate']:.2f}",
-                     f"{r['keys']:.2f}", f"{r['doors']:.2f}", f"{r['cells']:.0f}", f"{r['deaths']:.2f}"])
-    if final:
-        rows.append(["final, 3 seeds", f"{final['score']:.1f}", f"{final['exit_rate']:.2f}", f"{final['keys']:.2f}",
-                     f"{final['doors']:.2f}", f"{final['cells']:.0f}", f"{final['deaths']:.2f}"])
-    t = Table(rows, hAlign="LEFT", colWidths=[42 * mm] + [22 * mm] * 6)
+        "loops, corridors, doors, enemies, health and ammo; in stage 3/4 the locked door sits on a bridge of the room "
+        "graph with its keycard in a side branch. Training-only options add <b>exit switches</b> (press USE) and "
+        "<b>stairs</b> between rooms of different height, and 4–8-monster <b>combat arenas</b>. A scripted check "
+        "solved 100/100 maps. <b>Real levels:</b> 28 Freedoom levels (monsters thinned for training) give hand-made "
+        "geometry: lifts, odd shapes, real exits; 4 others are a held-out real test. <b>Curriculum:</b> stage 1 → 2 → "
+        "3 → 4 on rolling exit rate; the final mix is 30% real levels, 25% combat arenas, the rest generated stages "
+        "with 25% replay; map pools regenerate every 1,500 episodes. <b>Reward</b> (training only): exit +10 (+ time "
+        "and health bonus), keycard +3, door +2 (+4 locked), kill +1, damage dealt +0.01/HP, ammo spent −0.02, "
+        "<b>potential-based aim shaping</b> (0.3·cos to the nearest visible monster, policy-invariant), new 64-unit "
+        "cell +0.05 (count-based exploration), damage taken −0.01/HP, death −3, stuck −1 with cut-off. <b>PPO "
+        "(ours):</b> GAE(0.99, 0.95), clip 0.2, clipped value loss, 4 epochs, 128-step rollouts × 64 envs, 32-step "
+        "truncated BPTT, entropy 0.01, lr 3e-4 → 1e-4; a CPU actor runs rollouts and the GPU learns. Checkpoints "
+        "are chosen by <b>held-out</b> score, confirmed by a 6-seed test and by watching replays.")]
+    st += [P("Held-out results", h2), Image(curve_figure(log), width=180 * mm, height=50 * mm)]
+    rows = [["version (6 seeds x 8 held-out maps)", "approx score", "levels finished", "keys/map", "doors/map", "deaths/map"],
+            ["untrained network", "8.6", "0%", "0.00", "0.00", "0.62"]]
+    for label, r in fair_rows:
+        rows.append([label, f"{r['score']:.1f}", f"{100 * r['exit_rate']:.0f}%", f"{r['keys']:.2f}",
+                     f"{r['doors']:.2f}", f"{r['deaths']:.2f}"])
+    t = Table(rows, hAlign="LEFT", colWidths=[62 * mm] + [22 * mm] * 5)
     t.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 7.5), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(SOFT)),
                            ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor(INK)), ("TOPPADDING", (0, 0), (-1, -1), 1.5),
                            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)]))
     st += [t, Spacer(1, 3), P(
         "Held-out = 8 generated maps (2 per tier) from a reserved seed range, played through the real DoomAgent "
-        "interface. The approximate score uses our own guess at the hidden weights (exit 50 + efficiency, key 8, door 4, "
-        "exploration ≤ 15, kills ≤ 10, death −5), weighted by tier. Per-step latency is about 2 ms against a 40 ms budget.")]
+        "interface, 6 seeds each. The approximate score uses our own guess at the hidden weights (exit 50 + efficiency, "
+        "key 8, door 4, exploration ≤ 15, kills ≤ 10, death −5), weighted by tier. " + tier_text +
+        " Per-step latency is about 2 ms against the 40 ms budget. We also inspect every candidate by replay "
+        "(videos, top-down paths, behaviour statistics such as 'fires when a monster is visible' vs 'not visible').")]
     st += [P("Limitations", h2), P(
-        "Training maps are flat and grid-aligned (no stairs, lifts, switches or skull keys, one lock), so real "
-        "hand-made maps are out of distribution. Memory lives only in the GRU, so long backtracking in tier 4 is the "
-        "weakest skill. Pixels are not used. The held-out set is small (8 maps), so its score is noisy (about ±5 between "
-        "evaluations). Training ran on one laptop (about 1.2k steps/s) for a few hours.")]
+        "Aiming is the weakest skill: the policy fires only slightly more often when a monster is visible, so it dies "
+        "on crowded tier-4 maps. Full-size Freedoom levels with all monsters are still unsolved (0/8 exits on the "
+        "real held-out set), though they are far larger than a 2–4k-tic evaluation map. Dead reckoning drifts over "
+        "long episodes (the map stays locally consistent). Pixels are not used. Training ran on one laptop "
+        "(~1.3k steps/s, about " + f"{log[-1]['steps'] / 1e6:.0f}" + " M steps in total).")]
 
     doc = SimpleDocTemplate(str(out), pagesize=A4, leftMargin=14 * mm, rightMargin=14 * mm, topMargin=11 * mm,
                             bottomMargin=10 * mm, title="Team Slay brief", author="Team Slay")
     doc.build(st)
 
 
+FAIR_SPEC = [  # (label, [(comparison json, checkpoint key), ...]) averaged; seeds 11-66 in total
+    ("baseline curriculum, update 1800 (5.5 M)", [(ROOT / "docs" / "compare.json", "best_upd1800"),
+                                                    (ROOT / "docs" / "compare2.json", "best_upd1800")]),
+    ("+ hit/ammo/door rewards, update 2050 (6.3 M)", [(ROOT / "docs" / "compare.json", "snap_1822"),
+                                                        (ROOT / "docs" / "compare2.json", "snap_1822")]),
+    ("+ spatial memory, real levels, update 2800", [(ROOT / "docs" / "compare_mem2800.json", "best_upd2800")]),
+    ("+ stronger aim shaping, update 3000 (14.4 M)", [(ROOT / "docs" / "compare_mem3000.json", "best_upd3000")]),
+    ("final submission", [(ROOT / "docs" / "results_final.json", "final")]),
+]
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--log", default=str(ROOT / "checkpoints" / "cur1" / "heldout_log.jsonl"))
-    ap.add_argument("--final", default=str(ROOT / "docs" / "results_final.json"))
     ap.add_argument("--out", default=str(ROOT / "brief.pdf"))
     a = ap.parse_args()
-    build(Path(a.log), Path(a.final), Path(a.out))
+    logs = [ROOT / "checkpoints" / r / "heldout_log.jsonl" for r in ("cur1", "aim1", "mem1")]
+    build(logs, FAIR_SPEC, Path(a.out))
     print("wrote", a.out)
