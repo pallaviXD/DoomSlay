@@ -15,8 +15,12 @@ REWARD_WEIGHTS = {
     "exit": 10.0,  # reaching the level exit (largest evaluation category)
     "keycard": 3.0,  # first pickup of each key
     "door_open": 2.0,  # a door sector opened for the first time (doubles as "unlock" for locked doors)
-    "locked_door_bonus": 1.0,  # extra on top of door_open when the opened door was locked
+    # Raised 1 -> 4 at 3.9M steps: agents picked up keys but rarely went back to the locked door.
+    "locked_door_bonus": 4.0,  # extra on top of door_open when the opened door was locked
     "kill": 1.0,
+    # Added at 3.9M steps: dense aiming signal (kills alone are sparse). Mirrors damage_per_hp and is
+    # bounded by each enemy's health. Engine DAMAGECOUNT, training only.
+    "damage_dealt_per_hp": 0.01,
     "new_cell": 0.05,  # first visit of a 64x64 grid cell (true position, training only)
     "pickup_when_low": 0.1,  # health gained while health < 50, or ammo gained while selected ammo < 10
     "damage_per_hp": -0.01,
@@ -121,6 +125,10 @@ class RewardShaper:
             r += self._add("new_cell", w["new_cell"])
             s.cells += 1
             progress = True
+
+        dealt = priv.get("damage_dealt", 0.0) - prev.get("damage_dealt", 0.0)
+        if dealt > 0:
+            r += self._add("damage_dealt", w["damage_dealt_per_hp"] * dealt)
 
         dmg = priv["damage_taken"] - prev["damage_taken"]
         if dmg > 0:

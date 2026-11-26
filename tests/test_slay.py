@@ -194,3 +194,12 @@ def test_weapon_switch_is_not_a_pickup_and_stuck_cutoff():
     assert r == pytest.approx(REWARD_WEIGHTS["step"] + REWARD_WEIGHTS["pickup_when_low"])
     r, stuck = sh.step(priv(tic=200), vit())
     assert stuck and r == pytest.approx(REWARD_WEIGHTS["step"] + REWARD_WEIGHTS["stuck"])
+
+
+def test_damage_dealt_reward():
+    sh = RewardShaper()
+    sh.reset(priv(damage_dealt=0.0), {})
+    r, _ = sh.step(priv(tic=4, damage_dealt=20.0), vit())
+    assert r == pytest.approx(REWARD_WEIGHTS["step"] + 20 * REWARD_WEIGHTS["damage_dealt_per_hp"])
+    r, _ = sh.step(priv(tic=8, damage_dealt=20.0), vit())  # no new damage -> no reward
+    assert r == pytest.approx(REWARD_WEIGHTS["step"])

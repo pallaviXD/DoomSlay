@@ -55,6 +55,13 @@ def _worker(conn, wid: int, maps: list[dict], seed: int, episodes_per_map: int, 
 
     from training.rewards import RewardShaper
 
+    import vizdoom as vd
+
+    def with_damage_dealt(e):  # training-only extra signal: damage dealt to monsters (engine counter)
+        p = e.privileged_state()
+        p["damage_dealt"] = float(e._game.get_game_variable(vd.GameVariable.DAMAGECOUNT))
+        return p
+
     rng = np.random.default_rng(seed)
     shaper = RewardShaper(reward_weights, stuck_ticks=stuck_ticks)
     env = None
@@ -81,7 +88,7 @@ def _worker(conn, wid: int, maps: list[dict], seed: int, episodes_per_map: int, 
         # Per-map stuck window (curriculum sets longer windows on key maps, where backtracking through
         # already-visited rooms is required and earns no new-cell progress).
         shaper.stuck_ticks = int(cur.get("stuck_ticks", stuck_ticks))
-        shaper.reset(env.privileged_state(), env.mapinfo.door_sectors)
+        shaper.reset(with_damage_dealt(env), env.mapinfo.door_sectors)
         return obs
 
     t_engine = t_shape = t_idle = 0.0
@@ -95,7 +102,7 @@ def _worker(conn, wid: int, maps: list[dict], seed: int, episodes_per_map: int, 
             if cmd == "step":
                 obs, _, term, trunc, info = env.step(data)
                 t2 = time.perf_counter()
-                priv = env.privileged_state()
+                priv = with_damage_dealt(env)
                 r, stuck = shaper.step(priv, obs["vitals"])
                 t_engine += t2 - t1
                 t_shape += time.perf_counter() - t2
