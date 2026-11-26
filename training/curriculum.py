@@ -83,9 +83,17 @@ class Curriculum:
         # Keep disk use bounded: only the last 3 generations stay on disk (workers may still use the previous one).
         old = self.out_dir / f"gen{self.generation - 4:04d}"
         if old.is_dir():
+            # Best effort: on Windows a WAD can still be locked (antivirus scan, a worker closing it);
+            # disk cleanup must never crash training.
             for f in old.iterdir():
-                f.unlink(missing_ok=True)
-            old.rmdir()
+                try:
+                    f.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                old.rmdir()
+            except OSError:
+                pass
         return pool
 
     # ------------------------------------------------------------------ progress
