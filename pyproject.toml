@@ -13,6 +13,21 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8"]
+# Team Slay: training + agent deps. torch pinned to the official image version (docker/requirements.lock).
+train = ["torch==2.15.0", "tensorboard==2.21.0", "matplotlib>=3.9"]
+
+[tool.uv]
+# A plain `uv sync` installs torch too, so `uv run python validate.py` works on a fresh clone.
+default-groups = ["dev", "train"]
 
 [tool.uv.sources]
 doom-env = { path = "env", editable = true }
+# CUDA wheels (Blackwell RTX 50xx needs CUDA >= 12.8). Linux PyPI wheels already bundle CUDA.
+torch = [
+    { index = "pytorch-cu132", marker = "sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true

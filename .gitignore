@@ -222,3 +222,10 @@ _vizdoom.ini
 
 # Local validator / scorer artifacts
 *.lmp
+
+# --- Team Slay: training artifacts (never commit) ---
+runs/
+checkpoints/
+videos/
+training/generated_maps/
+*.lmp
