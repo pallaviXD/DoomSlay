@@ -150,8 +150,10 @@ Action masks built from the observation (allowed by the contract) remove pointle
 * **Practice levels:** our own map generator builds endless random levels (combat, multi-room, keycard + locked door,
   gauntlet) with doors, keys, exit switches and stairs, plus real Freedoom levels. Test levels are never used for practice.
 * **Curriculum:** easy levels first, harder ones as it improves.
-* **Rewards:** points for the exit (more when fast and healthy), keycards, doors, kills and exploring; small penalties
-  for damage, dying, wasted ammo and getting stuck.
+* **Rewards:** points for the exit (more when fast and healthy), keycards, doors and kills; small penalties
+  for damage, dying and wasted ammo.
+* **Exploring without getting stuck:** a bonus for every new area reached (count-based novelty), and a penalty plus a
+  restart when it makes no progress for about 6 seconds, so it learns not to loop or freeze.
 * **Algorithm:** our own recurrent PPO written from scratch in PyTorch, with 64 games running in parallel.
 
 ---

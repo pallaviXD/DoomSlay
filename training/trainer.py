@@ -93,7 +93,7 @@ def main():
                      fixed_stage=a.fixed_stage, combat_frac=a.combat_frac, real_frac=a.real_frac,
                      variety_frac=a.variety_frac,
                      thresholds={i + 1: float(x) for i, x in enumerate(a.thresholds.split(","))} | {4: 1.1})
-    if a.mix_weights:  # spend steps on the tiers that still move the evaluation (expert-panel decision)
+    if a.mix_weights:  # spend more steps on the harder tiers
         import training.curriculum as _cur
         _cur.MIX_WEIGHTS.update({i + 1: float(x) for i, x in enumerate(a.mix_weights.split(","))})
     start_update, steps_done, best = 0, 0, -1e9

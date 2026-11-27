@@ -42,7 +42,7 @@ class DoomAgent:
         torch.set_num_threads(1)  # evaluation gives us exactly one CPU thread
         self.observation_space = observation_space
         self.action_space = action_space
-        # The net is ~0.9 M params: one CPU step takes ~1-2 ms, cheaper than GPU launch + transfer
+        # The net is ~1.0 M params: one CPU step takes ~1-2 ms, cheaper than GPU launch + transfer
         # overhead per single-observation step, and it never touches the shared 2 GB VRAM budget.
         self.device = torch.device("cpu")
         self.net = M.SlayNet()
@@ -53,7 +53,7 @@ class DoomAgent:
             self.load_weights(ckpt)
             self.sample = bool(ckpt.get("sample", True)) if isinstance(ckpt, dict) else True
         else:
-            torch.manual_seed(0)  # untrained fallback (Phase 1 baseline); still a neural policy
+            torch.manual_seed(0)  # untrained fallback if weights are missing; still a neural policy
         self.net.eval()
         self.gen = torch.Generator().manual_seed(1234)
         self.memory = SpatialMemory()  # self-built mini-map (see spatial_memory.py)
@@ -67,7 +67,7 @@ class DoomAgent:
         is_ckpt = isinstance(ckpt, dict) and "model" in ckpt
         level = int(ckpt.get("mask_level", 2 if ckpt.get("masks", False) else 0)) if is_ckpt else 0
         self.net.use_masks = level
-        # Optional policy ENSEMBLE (expert-panel decision): extra trained networks whose per-head
+        # Optional policy ensemble (not used by the submitted weights): extra trained networks whose per-head
         # log-probabilities are averaged with the main net's. Each keeps its own GRU state; all share the
         # spatial memory and the chosen action. Every action still comes from trained weights.
         self.extra = []
