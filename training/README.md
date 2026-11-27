@@ -15,14 +15,11 @@ at evaluation time. See the main [README](../README.md) for the overview and res
 | `curriculum.py` | Stage progression and the map pool (generated + real levels, refreshed every 1,500 games) |
 | `mapgen.py` | UDMF map generator: rooms, corridors, doors, keycards, locked doors, exit switches, stairs, arenas |
 | `realmaps.py` | Copies 27 real Freedoom levels for training and keeps 4 aside for testing |
-| `eval.py`, `compare.py` | Fair repeated tests on the held-out maps (several seeds), JSON results in `docs/results/` |
-| `select_candidate.py` | Gate: a new checkpoint must beat the submission on held-out maps **and** `two_rooms.wad` |
-| `inspect_play.py`, `combat_stats.py`, `inspect_loop.ps1` | Replays + behaviour stats (empty-air shots, fist time, loops) |
+| `eval.py`, `compare.py` | Fair repeated tests on the held-out maps (several seeds) |
+| `inspect_play.py` | Replays + behaviour stats (empty-air shots, fist time, loops) |
 | `export.py` | Writes `submission/weights.pt` from a checkpoint |
 | `watch.py`, `record.py`, `make_video.py` | Watch the agent live, record clips, build the full-HUD MP4 |
 | `play_human.py` | Play a generated level yourself |
-| `make_figures.py`, `make_brief.py` | README charts and `brief.pdf` |
-| `bc_collect.py`, `bc_train.py`, `make_variant.py` | Experiments that did not make the final agent (behavioural cloning, ensembles) |
 
 ## Reproduce
 
@@ -30,7 +27,6 @@ at evaluation time. See the main [README](../README.md) for the overview and res
 uv sync
 uv run python -m training.realmaps
 uv run python -m training.train --run demo --stage 1 --num-envs 64 --mask-level 3
-uv run python -m training.select_candidate checkpoints/demo/best.pt
 uv run python -m training.export checkpoints/demo/best.pt
 ```
 
