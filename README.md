@@ -2,7 +2,7 @@
 
 # DoomSlay
 
-### A neural network that taught itself to play DOOM
+### A neural network that taught itself to play DOOM Game
 
 **Team Slay** · Yugaantar 2026 DevForge · Track 1: *"Can It Play DOOM?"*
 
