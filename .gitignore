@@ -228,4 +228,3 @@ runs/
 checkpoints/
 videos/
 training/generated_maps/
-*.lmp

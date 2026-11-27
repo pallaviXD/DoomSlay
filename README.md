@@ -1,183 +1,341 @@
-# Team Slay — DoomSlay
+<div align="center">
 
-Yugaantar 2026 · DevForge — Track 1 *"Can It Play DOOM?"*
+# DoomSlay
 
-A recurrent PPO agent (our own implementation) that plays unseen ViZDoom maps zero-shot from the
-ego-centric observation only: 64 raycasts, visible entities, vitals, plus a map it draws itself
-(spatial memory). It is trained on thousands of procedurally generated maps and real Freedoom levels
-through a four-stage curriculum: combat → exploration → keycard/locked door → gauntlet.
+### A neural network that learned to play DOOM by itself
 
-## Setup
+**Team Slay** · Yugaantar 2026 DevForge · Track 1: *"Can It Play DOOM?"*
 
-Windows 11, Linux or macOS (Apple Silicon), Python 3.13, [uv](https://docs.astral.sh/uv/):
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.15-EE4C2C?logo=pytorch&logoColor=white)
+![ViZDoom](https://img.shields.io/badge/ViZDoom-1.3.3-8B0000)
+![RL](https://img.shields.io/badge/RL-own%20recurrent%20PPO-success)
+![validate.py](https://img.shields.io/badge/validate.py-passing-brightgreen)
+![Decision time](https://img.shields.io/badge/decision%20time-~2%20ms-blue)
 
-```bash
-uv sync                          # vizdoom 1.3.3, gymnasium, doom_env (editable), torch 2.15.0, tensorboard
-uv run python validate.py        # official submission check
-uv run pytest -q                 # wrapper, map generator and agent/PPO/reward tests
+<table>
+<tr>
+<td align="center"><img src="docs/media/clip_combat.gif" width="380"><br><sub><b>Combat level:</b> 4 kills, exit in 8 seconds</sub></td>
+<td align="center"><img src="docs/media/clip_gauntlet.gif" width="380"><br><sub><b>Gauntlet level:</b> shotgun fight against a group</sub></td>
+</tr>
+</table>
+
+*Real gameplay of the final agent on maps it has never seen, replayed with the normal DOOM screen.*
+
+</div>
+
+---
+
+## At a glance
+
+| | |
+|---|---|
+| **What it is** | An AI agent that plays DOOM from what the player "senses", with no map and no cheats |
+| **How it learned** | Reinforcement learning (our own recurrent PPO) on thousands of generated maps plus real Freedoom levels |
+| **Unseen test levels finished** | **66%** overall (96 games): combat **100%**, multi-room **96%**, keycard **50%**, gauntlet **17%** |
+| **Hand-made template map** | **16 / 16** runs finished |
+| **Fighting** | **3.3 kills per level**, **0%** of shots fired at empty air |
+| **Speed** | about **2 ms** per decision (limit: 40 ms), 1 CPU core, no GPU needed |
+| **Rules** | Every action comes from the trained network: no scripts, no pathfinding, no aimbot |
+
+## Contents
+
+1. [Watch it play](#watch-it-play)
+2. [How it works (simple version)](#how-it-works-simple-version)
+3. [Results](#results)
+4. [What makes it different](#what-makes-it-different)
+5. [Tech stack](#tech-stack)
+6. [Quick start](#quick-start)
+7. [Rules checklist](#rules-checklist)
+8. [What we tried that did not work](#what-we-tried-that-did-not-work)
+9. [Limitations and next steps](#limitations-and-next-steps)
+10. [Repository layout](#repository-layout)
+
+---
+
+## Watch it play
+
+<table>
+<tr>
+<td align="center"><img src="docs/media/clip_keycard_exit.gif" width="380"><br><sub><b>Keycard level:</b> has the key, walks to the exit</sub></td>
+<td align="center"><img src="docs/media/clip_two_rooms.gif" width="380"><br><sub><b>Hand-made map:</b> opens the door, clears the room</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="docs/media/shot_gauntlet.png" width="380"><br><sub>Three soldiers ahead, shotgun ready</sub></td>
+<td align="center"><img src="docs/media/shot_demons.png" width="380"><br><sub>Firing at two charging demons</sub></td>
+</tr>
+</table>
+
+**Full video:** `uv run python -m training.make_video` records the agent on all 13 test maps and joins them
+into one MP4 with the real DOOM status bar (health, armor, ammo, keys) plus a score panel. You can also watch it
+live in a window with `uv run python -m training.watch`.
+
+---
+
+## How it works (simple version)
+
+```mermaid
+flowchart LR
+    A["DOOM game<br/>(ViZDoom)"] -->|"what the player senses"| B["SlayNet<br/>neural network"]
+    B -->|"buttons: move, turn,<br/>shoot, open door"| A
+    B --> M["Self-drawn map<br/>(spatial memory)"]
+    M --> B
 ```
 
-`uv sync` installs the `train` dependency group by default. On Windows, torch comes from the PyTorch
-cu132 index (CUDA 13.2, which RTX 50xx needs); on Linux it comes from PyPI. The submission itself needs
-no extra packages (`submission/requirements.txt` is empty): torch and numpy are in the official image,
-and inference only imports files inside `submission/`.
+### 1. What the AI sees
 
-> Windows note: Smart App Control blocks numpy/torch DLLs that lack reputation; it had to be turned off.
+The AI does **not** look at the screen pixels and never gets the real map. Every step it receives:
 
-## Run the agent
+* **64 distance "feelers"** all around it (like a bat): how far the nearest wall, door, locked door, monster or item is in each direction.
+* **A list of visible things**: up to 32 monsters and items in view, with distance, direction and movement.
+* **Its own status**: health, armor, ammo, which keys it holds, and its speed.
+
+### 2. The brain
+
+![Architecture](docs/media/architecture.png)
+
+* **Ray encoder:** a small convolution over the 64 feelers. It wraps around 360°, so "behind me" works correctly.
+* **Monster/item encoder:** handles any number of visible things (0 to 32) with an attention layer, so it can focus on the most dangerous monster.
+* **Memory (GRU):** remembers the last few seconds, for example "I just saw a locked door".
+* **Output:** 6 small decisions every step (move, sidestep, turn, shoot, use, switch weapon) that become the 9 game buttons.
+
+### 3. Spatial memory: the AI draws its own map
+
+The rules give the AI no map, so it **builds one itself**. It tracks its own position from its speed and its own
+turn presses (DOOM turns at a fixed rate), and marks on a small grid where it has walked and where its feelers saw
+walls, doors and locked doors. A 21 x 21 piece of this map, centred on the AI, is fed back into the network every step.
+This answers "have I been here already?" and "where was that locked door?".
+
+<table>
+<tr>
+<td align="center"><img src="docs/media/route_heldout_s3_5.png" width="260"><br><sub>Keycard level: key (star), then exit</sub></td>
+<td align="center"><img src="docs/media/route_heldout_s2_3.png" width="260"><br><sub>Multi-room level: finds the exit</sub></td>
+<td align="center"><img src="docs/media/route_heldout_s4_6.png" width="260"><br><sub>Gauntlet: key and 9 kills</sub></td>
+</tr>
+</table>
+
+*Top-down routes, drawn only for this README. The agent never sees these.*
+
+### 4. Smart button rules (action masking)
+
+Watching replays showed the AI shooting at empty air and switching weapons until it held its fist. We added
+**action masks**, which the competition rules explicitly allow (masking from observation fields). They only block
+pointless buttons; the network still makes every decision:
+
+* **Shoot** only when a monster is near the crosshair, and tap instead of holding (holding the pistol spreads shots).
+* **Switch weapon** only when stuck on the fist and ammo is available.
+* **Use / open** only when a door, switch or wall is within reach.
+
+![Behaviour fix](docs/media/behaviour_fix.png)
+
+### 5. How it learned
+
+```mermaid
+flowchart TD
+    G["Map generator<br/>rooms, doors, keys, exits,<br/>switches, stairs"] --> P
+    R["27 real Freedoom levels"] --> P
+    P["Training pool<br/>(new maps every 1,500 games)"] --> E["64 games in parallel"]
+    E --> PPO["Our recurrent PPO<br/>rewards: exit, keys, doors,<br/>kills, exploring"]
+    PPO --> E
+    PPO --> T["Test on 8 unseen maps<br/>+ 1 hand-made map"]
+    T --> S["Keep a version only if it<br/>wins on both"]
+```
+
+* **Maps:** a generator builds endless random levels in 4 types (combat, multi-room, keycard + locked door, gauntlet),
+  with optional exit switches and stairs. 27 real Freedoom levels add hand-made shapes. 4 more real levels and
+  8 generated levels are kept aside **only for testing**.
+* **Curriculum:** easy levels first, harder ones as it improves.
+* **Rewards:** points for reaching the exit (bonus for speed and health), keycards, doors, kills, damage dealt and
+  exploring new areas; small penalties for taking damage, dying, wasting ammo and getting stuck.
+* **Algorithm:** our own recurrent PPO (actor-critic with GRU memory), written from scratch in PyTorch.
+
+---
+
+## Results
+
+<table>
+<tr>
+<td><img src="docs/media/results_by_tier.png" width="420"></td>
+<td>
+
+**Final version, unseen test levels (96 games)**
+
+| Level type | Finished |
+|---|---|
+| Combat | **100%** |
+| Multi-room | **96%** |
+| Keycard → locked door → exit | **50%** |
+| Gauntlet | **17%** |
+| **All levels** | **66%** |
+| Hand-made `two_rooms` map | **16 / 16** |
+| Kills per level | **3.3** |
+| Deaths per level | **0.12** |
+
+</td>
+</tr>
+</table>
+
+### Progress during training
+
+![Training curve](docs/media/training_curve.png)
+
+| Version | Levels finished | Score* | Deaths / level | What changed |
+|---|---|---|---|---|
+| Untrained network | 0% | 8.6 | n/a | random weights |
+| Update 1800 | 50% | 44.0 | 0.42 | 4-stage curriculum |
+| Update 2800 | 54% | 46.4 | 0.29 | spatial memory + real levels |
+| Update 3000 | 56% | 52.3 | 0.22 | aim shaping |
+| Update 4240 | 51% | 54.2 | 0.15 | crosshair + weapon masks (3x more kills) |
+| **Update 4800 (submitted)** | **66%** | **59.5** | **0.12** | training focused on the scored level types |
+
+<sub>*Our estimate of the official score (exit, keys, doors, exploring, kills), weighted by level type. Each row is
+6 to 12 repeated runs on all 8 test maps. Raw results are in [docs/results/](docs/results/).</sub>
+
+### How we chose the final version
+
+A 4-agent review (training, inference, compute and a skeptic) set a strict rule: a new version replaces the
+submission only if it clearly wins on the unseen test levels **and** on the hand-made map. This blocked several
+"better looking" versions that scored up to 63 on generated maps but failed the hand-made map (0 to 5 out of 8).
+
+---
+
+## What makes it different
+
+* **Spatial memory without a map:** the agent draws its own occupancy map from its own movement and sensors.
+* **Handles any number of monsters:** attention pooling over a variable-length list of visible things.
+* **Map generator + real levels:** thousands of fresh levels so it cannot memorise layouts, plus real Freedoom geometry.
+* **Learned aiming:** a policy-invariant aim reward and crosshair masking taught it to turn and aim by itself.
+* **Honest model selection:** fair repeated tests, a hand-made map check and replay inspection instead of one lucky score.
+* **Tiny and fast:** 1.0 M weights, about 2 ms per decision on one CPU core.
+
+---
+
+## Tech stack
+
+| Area | Tools |
+|---|---|
+| Language | Python 3.13 |
+| Game engine | ViZDoom 1.3.3, Freedoom 2 (official `doom_env` wrapper) |
+| Neural network and RL | PyTorch 2.15 (our own recurrent PPO, attention, GRU, CNN) |
+| Environment API | Gymnasium, NumPy |
+| Maps | Own UDMF map generator, real Freedoom levels |
+| Training speed | 64 parallel game processes (Python multiprocessing), CPU actor + GPU learner |
+| Logging and charts | TensorBoard, Matplotlib |
+| Videos | ImageIO + FFmpeg (gameplay MP4 and GIFs) |
+| Brief PDF | ReportLab |
+| Packaging | uv, Git LFS for the weights |
+| Hardware used | One laptop: Intel i7-14700HX, RTX 5060 Laptop GPU, 16 GB RAM |
+
+---
+
+## Quick start
+
+```bash
+# 1. Install (Python 3.13 via uv)
+uv sync
+
+# 2. Official submission check
+uv run python validate.py
+
+# 3. Watch the agent play the 8 test levels live (Space = pause, N = next, Esc = quit)
+uv run python -m training.watch
+
+# 4. Play a generated level yourself (W A S D, mouse, click = shoot, E = use)
+uv run python -m training.play_human --stage 3
+```
+
+**Train, test and make videos**
+
+```bash
+uv run python -m training.realmaps                       # build real-level training copies
+uv run python -m training.train --run demo --stage 1 --num-envs 64 --mask-level 3   # train
+uv run python -m training.compare submission/weights.pt --seeds 11,22,33        # fair test
+uv run python -m training.inspect_play --ckpt submission/weights.pt --tag check # replays + stats
+uv run python -m training.make_video                     # one MP4 of all 13 test maps
+uv run python -m training.make_figures                   # README / brief charts
+uv run pytest -q tests/test_slay.py tests/test_mapgen.py tests/test_bc.py tests/test_env.py
+```
+
+Use the agent from Python:
 
 ```python
 from doom_env import make_env
 from submission.agent import DoomAgent
 
-env = make_env("maps/heldout/heldout_s3_4.wad", episode_ticks=4200)
+env = make_env("maps/two_rooms.wad")
 agent = DoomAgent(env.observation_space, env.action_space, "cpu")
 obs, _ = env.reset(seed=0); agent.reset()
 done = False
 while not done:
     obs, r, term, trunc, info = env.step(agent.act(obs)); done = term or trunc
-print(info)
+print(info)   # {'tic': ..., 'exit_reached': True}
 ```
 
-## Train
+---
 
-```bash
-uv run python -m training.realmaps                   # real Freedoom levels -> training copies + maps/heldout_real/
-uv run python -m training.train --run smoke --smoke  # 1-minute pipeline check
-uv run python -m training.train --run mem1 --stage 1 --num-envs 64 --total-steps 40e6 \
-    --combat-frac 0.25 --real-frac 0.3 --variety-frac 0.5 --masks
-uv run tensorboard --logdir runs                     # curves
-```
+## Rules checklist
 
-Checkpoints go to `checkpoints/<run>/` (`latest.pt`, and `best.pt` = best *held-out* score), and
-logs go to `runs/<run>/`. All of these are git-ignored. `--resume <ckpt> --resume-opt` continues a run;
-older checkpoints warm-start into newer architectures (`submission/model.py: load_compatible`).
-
-## Evaluate and watch
-
-```bash
-uv run python -m training.compare checkpoints/mem1/best.pt --seeds 11,22,33,44,55,66   # fair 6-seed test
-uv run python -m training.compare <ckpt> --manifest maps/heldout_real/manifest.json    # real Freedoom levels
-uv run python -m training.inspect_play --ckpt <ckpt> --tag check   # videos, paths, behaviour stats
-uv run python -m training.watch --ckpt <ckpt>                      # watch it play live (Space/N/Esc)
-uv run python -m training.play_human --stage 3                     # play a generated map yourself
-uv run python -m training.export <ckpt>                            # -> submission/weights.pt
-```
-
-## Architecture
-
-```
-rays 64 x [dist, near, 6 hit-type one-hot] ----- circular Conv1d x3 -------------> 256
-visible entities <=32 x [5 feats, type emb] ---- per-entity MLP + masked attn pool -> 193
-vitals (26 normalised) + previous action (15) -- MLP ----------------------------> 64
-spatial memory: self-built map, 5 x 21 x 21 ---- CNN x2 -------------------------> 64
-          concat -> Linear 256 -> GRUCell 256 -> actor (6 categorical heads, action masks) / critic
-```
-
-| Component | Why |
+| Rule | Status |
 |---|---|
-| **Circular 1-D conv over rays** | The 64 rays form a 360° ring, so circular padding makes "behind" wrap correctly, and weights shared over heading make a doorway look the same at any angle. |
-| **Masked attention pooling over entities** | 0 to 32 visible entities: a per-entity MLP, 2 learned attention queries and a masked max-pool. Permutation-invariant, ignores padding, zero when nothing is visible (unit-tested). |
-| **Spatial memory** ([submission/spatial_memory.py](submission/spatial_memory.py)) | The agent draws its own occupancy map in a dead-reckoned frame. Heading comes from its own TURN presses (DOOM's keyboard turn rate is deterministic: 1.76°/tic for the first 5 tics, then 3.52°/tic) and translation from the vitals velocity; the rays paint free space, walls, doors and locked doors. A 5×21×21 crop, rotated so "up" is the facing direction, goes through a small CNN. No global coordinates are used. It was added by **warm start**: the new fusion weights start at zero, so a trained policy is unchanged at first (unit-tested exactly). |
-| **GRU memory (256)** | Short-term memory across steps; reset in `reset()` and at every episode boundary in training. |
-| **Factored action heads** | The 9 buttons become 6 categoricals (move, strafe, turn, attack, use, next weapon): no contradictory presses, and the previous action is an input so the policy can learn `USE`'s button-down behaviour. |
-| **Action masks** (from observation fields, allowed by the rules) | ATTACK only when a monster is visible and not two steps in a row (holding pistol fire spreads shots); USE only when something is within reach ahead. The network still makes every decision; masks only remove pointless options. They are stored per checkpoint (`mask_level`) because they are part of how a policy was trained. The submission uses level 3: fire only with a monster near the crosshair (tap-fire), weapon switch only from the fist with ammo left, USE only within reach. |
-| **1.0 M parameters, CPU inference** | About 2–4 ms per `act()` on 1 thread, well inside the 40 ms budget; no VRAM used. |
+| Decisions come from trained neural weights | ✅ masks only remove options; no if/else action trees |
+| No A* / Dijkstra / pathfinding, no atan2 aimbot | ✅ the agent never turns or aims for itself by rule |
+| Own RL, not default Stable-Baselines3 | ✅ [training/ppo.py](training/ppo.py) written from scratch |
+| Entry point `submission/agent.py` with `DoomAgent` | ✅ `__init__`, `reset`, `act` |
+| 1 CPU thread, 2 GB VRAM, 8 GB RAM, 40 ms per decision | ✅ CPU only, about 2 ms per decision |
+| Weights through Git LFS, repo under 1 GB | ✅ `submission/weights.pt` (4 MB), repo under 25 MB |
+| Inference only uses `submission/` files | ✅ no imports from `training/` |
+| Only the given observations | ✅ the self-drawn map uses only observations and the agent's own actions |
+| `validate.py` passes | ✅ exit reached on the test map, about 2 ms per step |
 
-## Training pipeline
+---
 
-- **Own recurrent PPO** ([training/ppo.py](training/ppo.py)): GAE (γ 0.99, λ 0.95), clip 0.2 with clipped value
-  loss, 4 epochs, 128-step rollouts × 64 envs cut into 32-step truncated-BPTT sequences from the stored GRU state,
-  entropy 0.01, grad-norm clip 0.5, learning rate 3e-4 → 1e-4.
-- **Environments** ([training/envs.py](training/envs.py)): 64 spawn-based workers (the best measured throughput on a
-  20-core laptop with real levels); each builds the same spatial memory as the agent. A CPU actor runs rollouts
-  in two pipelined halves and the GPU learns.
-- **Procedural maps** ([training/mapgen.py](training/mapgen.py)): UDMF grid maps from a spanning-tree room graph
-  with loops, corridors, doors, enemies, items and an exit.
-  - Stage 1: combat in 1–2 rooms.
-  - Stage 2: exploration in 4–8 rooms, with the exit in the farthest room.
-  - Stage 3: keycard → locked door (on the only route) → exit.
-  - Stage 4: a gauntlet.
-  - Training-only options: **exit switches**, **stairs** between rooms of different height, and **combat arenas**
-    with 4–8 monsters. A scripted driver (test code only) solves every generated variant.
-- **Real levels** ([training/realmaps.py](training/realmaps.py)): 28 Freedoom levels with thinned monsters for
-  training. Four others (MAP02/08/15/31, all monsters) form a held-out real test set (`maps/heldout_real/`).
-- **Curriculum** ([training/curriculum.py](training/curriculum.py)): stage 1 → 4 on rolling exit rate, then a mix
-  of 30% real levels, 25% combat arenas and generated stages with 25% replay. Map pools are regenerated every
-  1,500 episodes.
-- **Reward shaping** ([training/rewards.py](training/rewards.py)), training only:
+## What we tried that did not work
 
-  | Event | Reward |
-  |---|---|
-  | Exit | +10, plus up to +3 for time left and +2 for health left |
-  | Keycard | +3 |
-  | Door opened | +2 (+4 more if it was locked) |
-  | Kill | +1 |
-  | Damage dealt | +0.01 per HP |
-  | Aim (potential-based, policy-invariant) | 0.3 × change in cos(angle to the nearest visible monster) |
-  | Fresh trigger press with a monster in the crosshair | +0.08 |
-  | Ammo spent | −0.02 per unit |
-  | New 64-unit cell (count-based exploration) | +0.05 |
-  | Health or ammo pickup when low | +0.1 |
-  | Damage taken | −0.01 per HP |
-  | Death | −3 |
-  | USE press | −0.003 |
-  | Each step | −0.001 |
-  | Stuck (no progress for 200 tics, 400 on key maps, 600 on real levels) | −1, episode ends |
+| Idea | Result |
+|---|---|
+| Behavioural cloning from our scripted solver, then PPO | Exits dropped from 14/24 to 4/24: the solver moves very differently (no sidestepping, waits at doors) |
+| Ensemble of two good versions | Inherited the weaker version's habit and failed the hand-made map |
+| Lower randomness when choosing actions | Agent got stuck in loops more often |
+| Adding masks to an agent trained without them | Score fell from 53.2 to 46.5: masks must be learned with |
 
-- **Model selection**: held-out evaluation through the real `DoomAgent` every few minutes. Candidates are
-  confirmed with a 6-seed test ([training/compare.py](training/compare.py)) and by watching replays
-  ([training/inspect_play.py](training/inspect_play.py)): videos, top-down paths, and behaviour statistics such as
-  "fires when a monster is visible vs not".
+Everything above is still in the repo ([training/bc_collect.py](training/bc_collect.py),
+[training/bc_train.py](training/bc_train.py), [training/make_variant.py](training/make_variant.py)) so judges
+can see the experiments.
 
-## Results
+---
 
-Held-out test: 8 generated maps (2 per tier) from a reserved seed range, never trained on, played through
-the real `DoomAgent` interface ([training/compare.py](training/compare.py)). The approximate score uses our
-own guess at the hidden weights, weighted by tier. Raw results are in `docs/compare*.json` and
-`docs/results_final.json`.
+## Limitations and next steps
 
-| Version | Seeds | Approx score | Levels finished | Deaths / map |
-|---|---|---|---|---|
-| Untrained network | 1 | 8.6 | 0% | 0.62 |
-| Baseline curriculum, update 1800 (5.5 M steps) | 6 | 44.0 | 50% | 0.42 |
-| + hit / ammo / door rewards, update 2050 | 6 | 47.6 | 48% | 0.23 |
-| + spatial memory + real levels, update 2800 | 6 | 46.4 | 54% | 0.29 |
-| + aim shaping, update 3000 | 12 | 52.3 | 56% | 0.22 |
-| + crosshair / weapon masks, update 4240 | 12 | 54.2 | 51% | 0.15 |
-| **Final submission: + tier-focused training mix, update 4800 (29.1 M steps)** | **12** | **59.5** | **66%** | **0.12** |
+* **Gauntlet levels (17%)** are the weakest: crowds of monsters plus long routes within a 2 minute limit.
+* **Keycard levels (50%)**: it usually finds the key, but sometimes runs out of time before the exit.
+* Full-size Freedoom campaign levels (70 to 200+ monsters) are not solved; they are much larger than a 2 minute test map.
+* The self-drawn map slowly drifts on long levels (it stays correct locally).
+* Next: longer training, curiosity rewards (RND), and imitation learning with a teacher that matches the agent's style.
 
-Final submission per tier (levels finished): **combat 100%, multi-room 96%, keycard → locked door 50%,
-gauntlet 17%**; 3.25 kills per map; **16/16** exits on the hand-made template map `two_rooms.wad`;
-0% of shots fired with no monster near the crosshair. Decision time about 2–4 ms (budget 40 ms); `validate.py` passes.
+---
 
-Selection rule (decided by a 4-agent review): a candidate replaces the submission only if it beats it by a clear
-margin on the 12-seed held-out set **and** solves the hand-made map at least as reliably. Several checkpoints with
-higher generated-map scores (up to 63.4) were rejected because they failed `two_rooms` (0/8 to 5/8).
-Behavioural cloning from the scripted solver was implemented ([training/bc_collect.py](training/bc_collect.py),
-[training/bc_train.py](training/bc_train.py)) and tested, but it reduced exits (4/24 vs 14/24), so it is not used.
-On 4 real Freedoom levels with all monsters (much larger than an evaluation map), no version reaches the
-exit yet; the score there rose from 11.3 to 14.4 after adding real levels to training.
-
-Training: about 33 M environment steps on one laptop (RTX 5060 Laptop GPU, i7-14700HX), roughly 13 hours
-including all experiments.
-
-## Known limitations
-
-- **Aiming** is the weakest skill; crowded tier-4 maps still kill the agent often.
-- Full-size Freedoom levels with all monsters are not solved (they are much larger than a 2–4k-tic evaluation map).
-- Dead reckoning drifts over long episodes (the map stays locally consistent); lifts and teleporters are not modelled.
-- Pixels (RGB/depth) are not used.
-- The approximate score in `eval.py` uses guessed weights; the real scoring weights are hidden.
-
-## Repository
+## Repository layout
 
 ```
-submission/   agent.py (DoomAgent), model.py (SlayNet), spatial_memory.py, slay_obs.py, weights.pt (LFS)
-training/     train.py/trainer.py, ppo.py, envs.py, rewards.py, curriculum.py, mapgen.py, realmaps.py,
-              eval.py, compare.py, inspect_play.py, watch.py, record.py, play_human.py, make_brief.py
-maps/         heldout/ (8 generated held-out maps), heldout_real/ (4 real Freedoom levels), two_rooms.wad
-tests/        test_env.py (wrapper), test_mapgen.py, test_slay.py (model, memory, masks, PPO, rewards)
-docs/         CONTRACT.md (official), TRACK_BRIEF.md, SPEC.md, compare*.json (fair-test results)
-brief.pdf     2-page project brief
+submission/        the evaluated agent
+  agent.py           DoomAgent: observation -> buttons
+  model.py           SlayNet network + action masks
+  spatial_memory.py  self-drawn map (dead reckoning + rays)
+  slay_obs.py        observation packing
+  weights.pt         trained weights (Git LFS)
+training/          everything used to train and test it
+  train.py, trainer.py, ppo.py, envs.py, rewards.py, curriculum.py
+  mapgen.py, realmaps.py              map generator and real levels
+  eval.py, compare.py, select_candidate.py, inspect_play.py
+  watch.py, play_human.py, record.py, make_video.py, make_figures.py, make_brief.py
+maps/              held-out test maps (generated + real) and the template map
+docs/              official rules, our condensed spec, results, media, dev log
+tests/             unit tests (model, memory, masks, PPO, rewards, map generator)
+brief.pdf          2-page project brief
 ```
+
+<div align="center">
+
+**Team Slay** · built during Yugaantar 2026 DevForge
+
+</div>

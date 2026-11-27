@@ -1,7 +1,39 @@
-# Training
+# Training pipeline
 
-Put your training pipeline here: environment setup, reward shaping, curriculum, model code, logs.
-Judges review this folder during manual review.
+Everything used to train, test and present the agent. Nothing here is imported by `submission/`
+at evaluation time. See the main [README](../README.md) for the overview and results.
 
-You may modify the engine, maps and game variables freely **for training**. Evaluation always uses
-the vanilla engine through the official `doom_env` wrapper, so train on `doom_env` observations.
+## Files
+
+| File | What it does |
+|---|---|
+| `train.py` | Light launcher (keeps torch out of the worker processes), starts `trainer.py` |
+| `trainer.py` | Main loop: 64 parallel games, CPU actor + GPU learner, curriculum, held-out eval, checkpoints |
+| `ppo.py` | Our recurrent PPO from scratch: GAE, clipped loss, truncated BPTT over GRU sequences |
+| `envs.py` | Worker processes running the official `doom_env` wrapper, with reward shaping on top |
+| `rewards.py` | Shaped rewards (exit, keys, doors, kills, exploring, aim, penalties) using training-only info |
+| `curriculum.py` | Stage progression and the map pool (generated + real levels, refreshed every 1,500 games) |
+| `mapgen.py` | UDMF map generator: rooms, corridors, doors, keycards, locked doors, exit switches, stairs, arenas |
+| `realmaps.py` | Copies 27 real Freedoom levels for training and keeps 4 aside for testing |
+| `eval.py`, `compare.py` | Fair repeated tests on the held-out maps (several seeds), JSON results in `docs/results/` |
+| `select_candidate.py` | Gate: a new checkpoint must beat the submission on held-out maps **and** `two_rooms.wad` |
+| `inspect_play.py`, `combat_stats.py`, `inspect_loop.ps1` | Replays + behaviour stats (empty-air shots, fist time, loops) |
+| `export.py` | Writes `submission/weights.pt` from a checkpoint |
+| `watch.py`, `record.py`, `make_video.py` | Watch the agent live, record clips, build the full-HUD MP4 |
+| `play_human.py` | Play a generated level yourself |
+| `make_figures.py`, `make_brief.py` | README charts and `brief.pdf` |
+| `bc_collect.py`, `bc_train.py`, `make_variant.py` | Experiments that did not make the final agent (behavioural cloning, ensembles) |
+
+## Reproduce
+
+```bash
+uv sync
+uv run python -m training.realmaps
+uv run python -m training.train --run demo --stage 1 --num-envs 64 --mask-level 3
+uv run python -m training.select_candidate checkpoints/demo/best.pt
+uv run python -m training.export checkpoints/demo/best.pt
+```
+
+Checkpoints, logs and generated maps go to `checkpoints/`, `runs/` and `training/generated_maps/`
+(git-ignored). Map, engine and reward changes here are for **training only**; evaluation uses the
+vanilla engine through the official wrapper.

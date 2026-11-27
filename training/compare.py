@@ -22,7 +22,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("ckpts", nargs="+")
     ap.add_argument("--seeds", default="11,22,33")
-    ap.add_argument("--out", default=str(ROOT / "docs" / "compare.json"))
+    ap.add_argument("--out", default=str(ROOT / "docs" / "results" / "compare.json"))
     ap.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
     a = ap.parse_args()
     maps = load_heldout(a.manifest)
